@@ -66,7 +66,6 @@ That's it. Pick a language, press `↵`, and it scans the board for you.
 | `p` | open the selected **post** in your browser (magnet links live there) |
 | `↵` | open the releases (sizes) for the selected post |
 | `m` | copy the selected release's magnet link |
-| `t` | copy the selected release's torrent link |
 | `?` | help |
 | `q` | quit |
 

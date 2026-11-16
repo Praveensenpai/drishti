@@ -961,16 +961,6 @@ async fn handle_detail_key(app: &mut App, key: KeyEvent) {
                 }
             }
         }
-        KeyCode::Char('t') => {
-            if let Some(release) = selected_release(app) {
-                if let Some(torrent) = &release.torrent {
-                    copy_to_clipboard(torrent);
-                    app.status = format!("torrent link copied · {}", release_label(release));
-                } else {
-                    app.status = "this release has no torrent link".to_string();
-                }
-            }
-        }
         KeyCode::Char('p') | KeyCode::Enter => {
             if let Some(thread) = app.detail_thread() {
                 match open_in_browser(&thread.url) {

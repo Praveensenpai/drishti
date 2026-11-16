@@ -33,7 +33,6 @@ pub fn draw(frame: &mut ratatui::Frame, _app: &mut App) {
         ("r", "reload the current page"),
         ("↵ / p (detail)", "open the post in your browser"),
         ("m (detail)", "copy the selected release's magnet link"),
-        ("t (detail)", "copy the selected release's torrent link"),
         ("?", "toggle this help"),
         ("q", "quit"),
     ];
