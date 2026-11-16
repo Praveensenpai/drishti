@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
             println!("wrote {}", config_path.display());
             Ok(())
         }
-        Some(Command::Update) => update(),
+        Some(Command::Update) => update().await,
         Some(Command::List {
             forum,
             page,
@@ -444,21 +444,24 @@ fn recorded_source() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Update drishti from its source checkout (git pull + reinstall).
-fn update() -> Result<()> {
-    let Some(src) = recorded_source() else {
-        anyhow::bail!(
-            "no source checkout recorded at {}. Reinstall with the install script.",
-            source_file().display()
-        );
-    };
+/// Update drishti: from its source checkout when installed from source,
+/// otherwise by downloading the latest prebuilt release binary.
+async fn update() -> Result<()> {
+    if let Some(src) = recorded_source() {
+        return update_from_source(&src);
+    }
+    update_from_release().await
+}
+
+/// `git pull` + `cargo install` from the recorded source checkout.
+fn update_from_source(src: &std::path::Path) -> Result<()> {
     if !src.join(".git").exists() {
         anyhow::bail!("{} is not a git checkout", src.display());
     }
     println!("==> pulling latest source in {}", src.display());
     let status = std::process::Command::new("git")
         .arg("-C")
-        .arg(&src)
+        .arg(src)
         .args(["pull", "--ff-only"])
         .status()
         .context("running git pull")?;
@@ -468,7 +471,7 @@ fn update() -> Result<()> {
     println!("==> rebuilding & installing drishti");
     let status = std::process::Command::new("cargo")
         .args(["install", "--path"])
-        .arg(&src)
+        .arg(src)
         .arg("--force")
         .status()
         .context("running cargo install")?;
@@ -476,6 +479,35 @@ fn update() -> Result<()> {
         anyhow::bail!("cargo install failed");
     }
     println!("==> drishti is up to date");
+    Ok(())
+}
+
+/// Download the latest prebuilt release binary and replace the running one.
+async fn update_from_release() -> Result<()> {
+    const URL: &str =
+        "https://github.com/Praveensenpai/drishti/releases/latest/download/drishti-linux-x86_64";
+    println!("==> downloading latest release");
+    let client = reqwest::Client::builder()
+        .user_agent("drishti-updater")
+        .build()
+        .context("building HTTP client")?;
+    let resp = client.get(URL).send().await.context("downloading release")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("download failed: HTTP {}", resp.status());
+    }
+    let bytes = resp.bytes().await.context("reading release bytes")?;
+    let exe = std::env::current_exe().context("locating current executable")?;
+    let tmp = exe.with_extension("new");
+    std::fs::write(&tmp, &bytes).context("writing new binary")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tmp)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&tmp, perms)?;
+    }
+    std::fs::rename(&tmp, &exe).context("replacing executable")?;
+    println!("==> drishti updated to the latest release");
     Ok(())
 }
 
