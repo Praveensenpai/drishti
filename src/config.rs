@@ -17,7 +17,8 @@ pub struct Config {
     pub gemini_api_key: String,
     /// Models tried in order when resolving original languages.
     pub gemini_models: Vec<String>,
-    /// Quality buckets that are shown. WEB-DL only by default.
+    /// Quality buckets that are shown. Digital/HD rips allowed by default;
+    /// DVDRip, CAM and theater prints are excluded.
     pub allowed_qualities: Vec<Quality>,
     /// Hide releases that do not carry the film's original language.
     pub original_only: bool,
@@ -40,7 +41,14 @@ impl Default for Config {
             base_url: crate::site::DEFAULT_BASE_URL.to_string(),
             gemini_api_key: String::new(),
             gemini_models: crate::ai::MODEL_CHAIN.iter().map(|s| s.to_string()).collect(),
-            allowed_qualities: vec![Quality::WebDl],
+            allowed_qualities: vec![
+                Quality::WebDl,
+                Quality::HdRip,
+                Quality::WebRip,
+                Quality::Bluray,
+                Quality::TvRip,
+                Quality::Unknown,
+            ],
             original_only: false,
             resolve_on_load: true,
             cache_ttl_minutes: 30,
@@ -98,12 +106,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_web_dl_only() {
+    fn default_allows_digital_but_not_dvd_cam_theater() {
         let config = Config::default();
         assert!(config.allowed_qualities.contains(&Quality::WebDl));
+        assert!(config.allowed_qualities.contains(&Quality::HdRip));
         assert!(!config.allowed_qualities.contains(&Quality::DvdRip));
         assert!(!config.allowed_qualities.contains(&Quality::Theater));
-        assert!(!config.allowed_qualities.contains(&Quality::HdRip));
+        assert!(!config.allowed_qualities.contains(&Quality::Cam));
     }
 
     #[test]

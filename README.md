@@ -4,7 +4,7 @@
 
 ### *ದೃಷ್ಟಿ — "sight"*
 
-**A beautiful terminal browser for [1TamilMV](https://www.1tamilmv.io) — WEB‑DL only, and only the original language.**
+**A beautiful terminal browser for [1TamilMV](https://www.1tamilmv.io) — digital HD rips only (WEB‑DL / HDRip / WEBRip), no DVDRip, CAM or theater prints — and only the original language.**
 
 [![Latest Release](https://img.shields.io/github/v/release/Praveensenpai/drishti?style=for-the-badge&color=cba6f7)](https://github.com/Praveensenpai/drishti/releases)
 [![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Praveensenpai/drishti)
@@ -29,7 +29,7 @@
 └──────────────────────────────────────────────┘
 ```
 
-- 🎯 **WEB‑DL only** — no DVDRip, no theater prints, no cam rips. Ever.
+- 🎯 **No junk rips** — DVDRip, DVD, CAM / CAMHD and theater prints are filtered out; WEB‑DL, HDRip and WEBRip stay.
 - 🌐 **Original language** — knows which language a film was *actually* made in, so you can hide the dubbed copies.
 - 🧠 **Smart detection** — reads multi‑audio tags instantly, asks Gemini only when it must, and remembers the answer.
 - ⚡ **Fast** — pages and releases are cached for 30 minutes, so switching pages is instant.

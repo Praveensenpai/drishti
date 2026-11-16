@@ -472,12 +472,14 @@ fn collect_anchors(html: &str) -> Vec<Anchor> {
             .map(|m| decode_entities(m.as_str()))
             .unwrap_or_default();
 
-        let kind = if attrs.contains("data-fileext=\"torrent\"")
+        let kind = if url.starts_with("magnet:") {
+            // Magnets on this board are sometimes plain <a href="magnet:…">
+            // with no class, so the URL itself is the reliable signal.
+            AnchorKind::Magnet
+        } else if attrs.contains("data-fileext=\"torrent\"")
             || attrs.contains("data-fileext=torrent")
         {
             AnchorKind::Torrent
-        } else if attrs.contains("skyblue-button") && url.starts_with("magnet:") {
-            AnchorKind::Magnet
         } else if attrs.contains("download-button") {
             AnchorKind::Direct
         } else {
