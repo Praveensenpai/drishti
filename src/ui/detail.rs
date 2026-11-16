@@ -16,7 +16,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Min(5),
             Constraint::Length(1),
         ])
@@ -66,6 +66,20 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         None => ("unknown — open the thread to resolve".to_string(), Theme::muted()),
     };
 
+    let third = if app.status.is_empty() {
+        Line::from(vec![
+            Span::styled(thread.forum.title, Theme::muted()),
+            Span::styled("  ·  ", Theme::muted()),
+            Span::styled(format!("by {}", thread.author), Theme::muted()),
+            Span::styled("  ·  ", Theme::muted()),
+            Span::styled(format!("{} replies", thread.replies), Theme::muted()),
+            Span::styled("  ·  ", Theme::muted()),
+            Span::styled(format!("{} views", thread.views), Theme::muted()),
+        ])
+    } else {
+        Line::from(Span::styled(app.status.clone(), Theme::good()))
+    };
+
     let lines = vec![
         Line::from(vec![
             Span::styled(title, Theme::focus()),
@@ -76,15 +90,7 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             truncate(&thread.title, area.width.saturating_sub(4) as usize),
             Theme::muted(),
         )),
-        Line::from(vec![
-            Span::styled(thread.forum.title, Theme::muted()),
-            Span::styled("  ·  ", Theme::muted()),
-            Span::styled(format!("by {}", thread.author), Theme::muted()),
-            Span::styled("  ·  ", Theme::muted()),
-            Span::styled(format!("{} replies", thread.replies), Theme::muted()),
-            Span::styled("  ·  ", Theme::muted()),
-            Span::styled(format!("{} views", thread.views), Theme::muted()),
-        ]),
+        third,
     ];
 
     frame.render_widget(Paragraph::new(lines).block(Theme::block("releases")), area);
@@ -164,7 +170,7 @@ fn draw_releases(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
             .fg(ratatui::style::Color::Black)
             .add_modifier(Modifier::BOLD),
     )
-    .block(Theme::block("downloads available"));
+    .block(Theme::block("releases"));
 
     let mut state = TableState::default();
     if !visible.is_empty() {
@@ -182,12 +188,12 @@ fn draw_footer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         "showing every release"
     };
     let spans = vec![
-        Span::styled(" ↵ ", Theme::focus()),
-        Span::styled("download direct  ", Theme::muted()),
+        Span::styled(" ↵/p ", Theme::focus()),
+        Span::styled("open page  ", Theme::muted()),
         Span::styled("m ", Theme::focus()),
         Span::styled("copy magnet  ", Theme::muted()),
         Span::styled("t ", Theme::focus()),
-        Span::styled("torrent  ", Theme::muted()),
+        Span::styled("copy torrent  ", Theme::muted()),
         Span::styled("o ", Theme::focus()),
         Span::styled("toggle original-only  ", Theme::muted()),
         Span::styled("esc ", Theme::focus()),

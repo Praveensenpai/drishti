@@ -82,19 +82,6 @@ impl Release {
         self.langs.all().contains(&original)
     }
 
-    /// Best available download link, preferring a magnet over a direct link.
-    pub fn preferred_link(&self) -> Option<(&'static str, String)> {
-        if let Some(m) = &self.magnet {
-            return Some(("magnet", m.clone()));
-        }
-        if let Some(d) = &self.direct {
-            return Some(("direct", d.clone()));
-        }
-        if let Some(t) = &self.torrent {
-            return Some(("torrent", t.clone()));
-        }
-        None
-    }
 }
 
 /// Split a thread title into a movie name, a year and the remaining tags.

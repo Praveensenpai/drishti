@@ -279,8 +279,6 @@ fn draw_footer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         Span::styled("filters  ", Theme::muted()),
         Span::styled("o ", Theme::focus()),
         Span::styled("original-only  ", Theme::muted()),
-        Span::styled("d ", Theme::focus()),
-        Span::styled("downloads  ", Theme::muted()),
         Span::styled("? ", Theme::focus()),
         Span::styled("help  ", Theme::muted()),
         Span::styled("q ", Theme::focus()),

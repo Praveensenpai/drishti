@@ -2,7 +2,6 @@
 
 pub mod browser;
 pub mod detail;
-pub mod downloads;
 pub mod help;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -64,7 +63,6 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     match app.screen {
         Screen::Browser => browser::draw(frame, app),
         Screen::Detail => detail::draw(frame, app),
-        Screen::Downloads => downloads::draw(frame, app),
         Screen::Help => help::draw(frame, app),
         Screen::Language => browser::draw_language(frame, app),
     }

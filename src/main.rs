@@ -4,7 +4,6 @@
 mod ai;
 mod app;
 mod config;
-mod download;
 mod forums;
 mod lang;
 mod model;
@@ -25,7 +24,6 @@ use tokio::sync::{Semaphore, mpsc};
 use crate::ai::{CacheEntry, Gemini, LangCache, cache_key, effective_original, heuristic_original};
 use crate::app::{App, Msg, Screen};
 use crate::config::Config;
-use crate::download::{DownloadEvent, DownloadKind, DownloadStatus, DownloadTask};
 use crate::forums::{Forum, all_web_hd};
 use crate::lang::Lang;
 use crate::model::Thread;
@@ -45,10 +43,6 @@ struct Cli {
     /// Board address.
     #[arg(long, global = true)]
     base_url: Option<String>,
-
-    /// Download directory.
-    #[arg(long, global = true)]
-    download_dir: Option<PathBuf>,
 
     /// Gemini API key. Falls back to GEMINI_API_KEY.
     #[arg(long, global = true)]
@@ -105,7 +99,7 @@ enum Command {
     ConfigPath,
     /// Write a default configuration file.
     Init,
-    /// Update drishti to the latest source (git pull + reinstall).
+    /// Update drishti to the latest release (downloads from GitHub; works anywhere).
     Update,
 }
 
@@ -121,9 +115,6 @@ async fn main() -> Result<()> {
     let mut config = Config::load(&config_path)?;
     if let Some(base) = cli.base_url {
         config.base_url = base;
-    }
-    if let Some(dir) = cli.download_dir.clone() {
-        config.download_dir = dir;
     }
     if let Some(key) = cli.gemini_key.clone() {
         config.gemini_api_key = key;
@@ -426,64 +417,9 @@ async fn resolve(config: &Config, forum_name: &str, page: u32) -> Result<()> {
     Ok(())
 }
 
-/// The file the installer writes to record where the source lives.
-fn source_file() -> PathBuf {
-    config::default_config_path()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("source.txt")
-}
-
-/// The recorded source checkout, if the installer wrote one.
-fn recorded_source() -> Option<PathBuf> {
-    std::fs::read_to_string(source_file())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
-/// Update drishti: from its source checkout when installed from source,
-/// otherwise by downloading the latest prebuilt release binary.
+/// Update drishti by downloading the latest prebuilt release binary from
+/// GitHub. Works from any directory — no local source checkout needed.
 async fn update() -> Result<()> {
-    if let Some(src) = recorded_source() {
-        return update_from_source(&src);
-    }
-    update_from_release().await
-}
-
-/// `git pull` + `cargo install` from the recorded source checkout.
-fn update_from_source(src: &std::path::Path) -> Result<()> {
-    if !src.join(".git").exists() {
-        anyhow::bail!("{} is not a git checkout", src.display());
-    }
-    println!("==> pulling latest source in {}", src.display());
-    let status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(src)
-        .args(["pull", "--ff-only"])
-        .status()
-        .context("running git pull")?;
-    if !status.success() {
-        anyhow::bail!("git pull failed");
-    }
-    println!("==> rebuilding & installing drishti");
-    let status = std::process::Command::new("cargo")
-        .args(["install", "--path"])
-        .arg(src)
-        .arg("--force")
-        .status()
-        .context("running cargo install")?;
-    if !status.success() {
-        anyhow::bail!("cargo install failed");
-    }
-    println!("==> drishti is up to date");
-    Ok(())
-}
-
-/// Download the latest prebuilt release binary and replace the running one.
-async fn update_from_release() -> Result<()> {
     const URL: &str =
         "https://github.com/Praveensenpai/drishti/releases/latest/download/drishti-linux-x86_64";
     println!("==> downloading latest release");
@@ -523,9 +459,6 @@ fn maybe_auto_update(config: &Config) {
     if !config.auto_update {
         return;
     }
-    if recorded_source().is_none() {
-        return;
-    }
     let stamp = cache_dir().join("update_check");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -563,7 +496,6 @@ async fn run_tui(
     app.page_to = page_to;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
-    let (download_tx, mut download_rx) = mpsc::unbounded_channel::<DownloadEvent>();
 
     // The language picker is shown first; the first page is loaded when the
     // user picks a language. Nothing is fetched until then.
@@ -578,14 +510,11 @@ async fn run_tui(
             Some(Ok(event)) = events.next() => {
                 if let Event::Key(key) = event
                     && key.kind == KeyEventKind::Press {
-                        handle_key(&mut app, key, &tx, &download_tx).await;
+                        handle_key(&mut app, key, &tx).await;
                     }
             }
             Some(msg) = rx.recv() => {
                 handle_message(&mut app, msg, &tx).await;
-            }
-            Some(event) = download_rx.recv() => {
-                app.apply_download_event(event);
             }
         }
 
@@ -795,7 +724,6 @@ async fn handle_key(
     app: &mut App,
     key: KeyEvent,
     tx: &mpsc::UnboundedSender<Msg>,
-    download_tx: &mpsc::UnboundedSender<DownloadEvent>,
 ) {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         if let KeyCode::Char('c') = key.code { app.should_quit = true }
@@ -817,8 +745,7 @@ async fn handle_key(
 
     match app.screen {
         Screen::Browser => handle_browser_key(app, key, tx).await,
-        Screen::Detail => handle_detail_key(app, key, download_tx).await,
-        Screen::Downloads => handle_downloads_key(app, key),
+        Screen::Detail => handle_detail_key(app, key).await,
         Screen::Help => {}
         Screen::Language => handle_language_key(app, key, tx).await,
     }
@@ -912,7 +839,6 @@ async fn handle_browser_key(
                 spawn_page_load(app, forum, 1, tx.clone());
             }
         }
-        KeyCode::Char('d') => app.screen = Screen::Downloads,
         KeyCode::Char('g') => app.select_row(0),
         KeyCode::Char('G') => {
             let last = app.visible_threads().len().saturating_sub(1);
@@ -950,7 +876,6 @@ async fn handle_browser_key(
                 app.detail_only_original = false;
             }
         }
-        KeyCode::Tab => app.screen = Screen::Downloads,
         _ => {}
     }
 }
@@ -1005,17 +930,12 @@ fn handle_filter_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Keys for the release detail pane.
-async fn handle_detail_key(
-    app: &mut App,
-    key: KeyEvent,
-    download_tx: &mpsc::UnboundedSender<DownloadEvent>,
-) {
+async fn handle_detail_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.screen = Screen::Browser,
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.screen = Screen::Help,
         KeyCode::Char('o') => app.detail_only_original = !app.detail_only_original,
-        KeyCode::Char('d') => app.screen = Screen::Downloads,
         KeyCode::Up | KeyCode::Char('k') => {
             app.detail_selected = app.detail_selected.saturating_sub(1)
         }
@@ -1027,38 +947,62 @@ async fn handle_detail_key(
             if let Some(release) = selected_release(app) {
                 if let Some(magnet) = &release.magnet {
                     copy_to_clipboard(magnet);
-                    app.status = "magnet copied to the clipboard".to_string();
+                    app.status = format!("magnet copied · {}", release_label(release));
                 } else {
                     app.status = "this release has no magnet link".to_string();
                 }
             }
         }
         KeyCode::Char('t') => {
-            start_download(app, download_tx);
+            if let Some(release) = selected_release(app) {
+                if let Some(torrent) = &release.torrent {
+                    copy_to_clipboard(torrent);
+                    app.status = format!("torrent link copied · {}", release_label(release));
+                } else {
+                    app.status = "this release has no torrent link".to_string();
+                }
+            }
         }
-        KeyCode::Enter => {
-            start_download(app, download_tx);
+        KeyCode::Char('p') | KeyCode::Enter => {
+            if let Some(thread) = app.detail_thread() {
+                match open_in_browser(&thread.url) {
+                    Ok(()) => app.status = "opened the thread in your browser".to_string(),
+                    Err(e) => app.status = format!("could not open browser: {e}"),
+                }
+            }
         }
-        KeyCode::Tab => app.screen = Screen::Downloads,
         _ => {}
     }
 }
 
-/// Keys for the download queue.
-fn handle_downloads_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Esc | KeyCode::Enter => app.screen = Screen::Browser,
-        KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('?') => app.screen = Screen::Help,
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.download_selected = app.download_selected.saturating_sub(1)
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            let max = app.downloads.len().saturating_sub(1);
-            app.download_selected = (app.download_selected + 1).min(max);
-        }
-        KeyCode::Tab => app.screen = Screen::Browser,
-        _ => {}
+/// A short label for a release, e.g. `4K · 19.5GB`.
+fn release_label(release: &crate::model::Release) -> String {
+    format!(
+        "{} · {}",
+        release.info.resolution.label(),
+        crate::quality::human_size(release.info.size_bytes)
+    )
+}
+
+/// Open a URL in the system's default browser.
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(target_os = "windows") {
+        ("cmd", &["/C", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+    let status = std::process::Command::new(program)
+        .args(args)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("{program} exited with {status}")))
     }
 }
 
@@ -1068,61 +1012,6 @@ fn selected_release(app: &App) -> Option<&crate::model::Release> {
     let visible = app.visible_releases();
     let index = visible.get(app.detail_selected).copied()?;
     thread.releases.get(index)
-}
-
-/// Start a download for the selected release.
-fn start_download(
-    app: &mut App,
-    download_tx: &mpsc::UnboundedSender<DownloadEvent>,
-) {
-    let Some(release) = selected_release(app) else {
-        return;
-    };
-
-    let (kind_str, url) = release.preferred_link().unwrap_or(("direct", String::new()));
-    let kind = match kind_str {
-        "magnet" => DownloadKind::Magnet,
-        "torrent" => DownloadKind::Torrent,
-        _ => DownloadKind::Direct,
-    };
-
-    if url.is_empty() {
-        app.status = "this release has no download link".to_string();
-        return;
-    }
-
-    let id = app.downloads.len() as u64 + 1;
-    let name = release.name.clone();
-    let task = DownloadTask {
-        id,
-        name: name.clone(),
-        kind,
-        url: url.clone(),
-        status: DownloadStatus::Queued,
-    };
-    app.queue_download(task);
-    app.status = format!("queued: {name}");
-    app.screen = Screen::Downloads;
-
-    let client = app.client.clone();
-    let target_dir = app.config.download_dir.clone();
-    let tx = download_tx.clone();
-    tokio::spawn(async move {
-        let result = match kind {
-            DownloadKind::Direct => {
-                download::download_direct(&client, &url, &target_dir, &name, id, &tx).await
-            }
-            _ => {
-                download::hand_off(kind, &url, &client, &target_dir, &name, id, &tx).await
-            }
-        };
-        if let Err(e) = result {
-            let _ = tx.send(DownloadEvent::Failed {
-                id,
-                error: e.to_string(),
-            });
-        }
-    });
 }
 
 /// Copy the resolved languages from the cache onto the threads.

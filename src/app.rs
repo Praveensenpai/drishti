@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use crate::ai::{CacheEntry, Gemini, LangCache, cache_key, heuristic_original};
 use crate::config::Config;
-use crate::download::{DownloadEvent, DownloadStatus, DownloadTask};
 use crate::forums::{Forum, all_web_hd};
 use crate::lang::Lang;
 use crate::model::{OriginalLang, Thread};
@@ -19,7 +18,6 @@ use crate::site::Client;
 pub enum Screen {
     Browser,
     Detail,
-    Downloads,
     Help,
     /// Choose the language / forum to scan.
     Language,
@@ -120,9 +118,6 @@ pub struct App {
     pub detail_selected: usize,
     pub detail_only_original: bool,
 
-    pub downloads: Vec<DownloadTask>,
-    pub download_selected: usize,
-
     /// Movies queued for model resolution.
     pub ai_pending: Vec<(usize, String, Option<u16>)>,
     pub ai_in_flight: bool,
@@ -181,8 +176,6 @@ impl App {
             detail_index: None,
             detail_selected: 0,
             detail_only_original: false,
-            downloads: Vec::new(),
-            download_selected: 0,
             ai_pending: Vec::new(),
             ai_in_flight: false,
             should_quit: false,
@@ -331,33 +324,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Add a task to the download queue.
-    pub fn queue_download(&mut self, task: DownloadTask) {
-        self.downloads.push(task);
-    }
-
-    /// Apply a download event.
-    pub fn apply_download_event(&mut self, event: DownloadEvent) {
-        let id = match &event {
-            DownloadEvent::Started { id } => *id,
-            DownloadEvent::Progress { id, .. } => *id,
-            DownloadEvent::Finished { id, .. } => *id,
-            DownloadEvent::HandedOff { id, .. } => *id,
-            DownloadEvent::Failed { id, .. } => *id,
-        };
-        let Some(task) = self.downloads.iter_mut().find(|t| t.id == id) else {
-            return;
-        };
-        task.status = match event {
-            DownloadEvent::Started { .. } => DownloadStatus::Queued,
-            DownloadEvent::Progress { downloaded, total, .. } => {
-                DownloadStatus::Running { downloaded, total }
-            }
-            DownloadEvent::Finished { path, bytes, .. } => DownloadStatus::Finished { path, bytes },
-            DownloadEvent::HandedOff { client, .. } => DownloadStatus::HandedOff { client },
-            DownloadEvent::Failed { error, .. } => DownloadStatus::Failed { error },
-        };
-    }
 }
 
 #[cfg(test)]

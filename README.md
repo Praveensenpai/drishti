@@ -10,7 +10,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Praveensenpai/drishti)
 [![License](https://img.shields.io/badge/License-MIT-89b4fa?style=for-the-badge)](LICENSE)
 
-[Install](#-install) • [Use](#-use) • [Update](#-update) • [License](#-license)
+[Install](#-install) • [Use](#-use) • [Update](#-update) • [Disclaimer](#-disclaimer) • [License](#-license)
 
 </div>
 
@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/Praveensenpai/drishti/main/install.
 ```
 
 > [!TIP]
-> **One command. No fuss.** The installer sets up Rust if needed, builds Drishti, and puts `drishti` on your `PATH`.
+> **One command. No fuss.** The installer drops in a prebuilt binary (no Rust needed), or builds from source as a fallback, and puts `drishti` on your `PATH`.
 
 ---
 
@@ -63,7 +63,9 @@ That's it. Pick a language, press `↵`, and it scans the board for you.
 | `←` `→` | previous / next page |
 | `o` | toggle original‑language only |
 | `f` | filters |
-| `d` | downloads |
+| `p` / `↵` | open the thread page in your browser |
+| `m` | copy the selected release's magnet link |
+| `t` | copy the selected release's torrent link |
 | `?` | help |
 | `q` | quit |
 
@@ -76,6 +78,16 @@ Drishti checks for a newer version once a day on first launch and updates itself
 ```bash
 drishti update
 ```
+
+---
+
+## ⚠️ Disclaimer
+
+**This project is not affiliated with, endorsed by, or connected to 1TamilMV or any of its owners/operators in any way.**
+
+Drishti is an independent, open-source tool that only reads public forum pages and helps you organise the information shown there. It does **not** host, store, upload, or distribute any media, and it does not bypass any access controls, logins, paywalls, or geo-restrictions.
+
+The sites this tool browses may host copyrighted material. **You are solely responsible for what you access or download and for complying with the laws of your country.** The author assumes **no liability** and makes **no warranties** for any use of this software, including any legal consequences of your actions. Use it only where you have the right to access the content.
 
 ---
 

@@ -13,8 +13,6 @@ use crate::quality::Quality;
 pub struct Config {
     /// Board address.
     pub base_url: String,
-    /// Where downloads are written.
-    pub download_dir: PathBuf,
     /// Gemini API key. Falls back to `GEMINI_API_KEY` from the environment.
     pub gemini_api_key: String,
     /// Models tried in order when resolving original languages.
@@ -32,8 +30,6 @@ pub struct Config {
     /// Check for a newer source build once a day (on first launch) and update
     /// in the background. Requires an install that recorded its source dir.
     pub auto_update: bool,
-    /// Which external torrent client to hand magnets to.
-    pub torrent_client: String,
     /// Number of movies sent to the model in one request.
     pub ai_batch_size: usize,
 }
@@ -42,7 +38,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             base_url: crate::site::DEFAULT_BASE_URL.to_string(),
-            download_dir: default_download_dir(),
             gemini_api_key: String::new(),
             gemini_models: crate::ai::MODEL_CHAIN.iter().map(|s| s.to_string()).collect(),
             allowed_qualities: vec![Quality::WebDl],
@@ -50,7 +45,6 @@ impl Default for Config {
             resolve_on_load: true,
             cache_ttl_minutes: 30,
             auto_update: true,
-            torrent_client: String::new(),
             ai_batch_size: 24,
         }
     }
@@ -97,14 +91,6 @@ impl Config {
 pub fn default_config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("drishti").join("config.toml")
-}
-
-/// The default download directory.
-pub fn default_download_dir() -> PathBuf {
-    let base = dirs::video_dir()
-        .or_else(dirs::download_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("tamilmv")
 }
 
 #[cfg(test)]

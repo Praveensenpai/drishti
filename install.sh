@@ -5,7 +5,6 @@ set -euo pipefail
 BIN_DIR="${DRISHTI_BIN:-$HOME/.local/bin}"
 REPO="${DRISHTI_REPO:-https://github.com/Praveensenpai/drishti.git}"
 SRC="${DRISHTI_SRC:-$HOME/.local/share/drishti/src}"
-CONFIG_DIR="$HOME/.config/drishti"
 RELEASE_URL="https://github.com/Praveensenpai/drishti/releases/latest/download/drishti-linux-x86_64"
 
 path_hint() {
@@ -46,7 +45,5 @@ else
 fi
 echo "==> Building & installing drishti…"
 cargo install --path "$SRC" --force
-mkdir -p "$CONFIG_DIR"
-printf '%s\n' "$SRC" > "$CONFIG_DIR/source.txt"
 path_hint
 echo "==> Done!  Run:  drishti"
