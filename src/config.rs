@@ -33,6 +33,10 @@ pub struct Config {
     pub auto_update: bool,
     /// Number of movies sent to the model in one request.
     pub ai_batch_size: usize,
+    /// Optional HTTP endpoint to POST a selected release's magnet link to.
+    /// Leave empty to disable (not everyone runs ryoiki). When set, the
+    /// selected release's magnet is POSTed as JSON `{"magnet": "..."}`.
+    pub magnet_post_url: String,
 }
 
 impl Default for Config {
@@ -40,7 +44,10 @@ impl Default for Config {
         Self {
             base_url: crate::site::DEFAULT_BASE_URL.to_string(),
             gemini_api_key: String::new(),
-            gemini_models: crate::ai::MODEL_CHAIN.iter().map(|s| s.to_string()).collect(),
+            gemini_models: crate::ai::MODEL_CHAIN
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             allowed_qualities: vec![
                 Quality::WebDl,
                 Quality::HdRip,
@@ -54,6 +61,7 @@ impl Default for Config {
             cache_ttl_minutes: 30,
             auto_update: true,
             ai_batch_size: 24,
+            magnet_post_url: String::new(),
         }
     }
 }
@@ -64,10 +72,10 @@ impl Config {
         if !path.exists() {
             return Ok(Config::default());
         }
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let mut config: Config = toml::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut config: Config =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         if config.gemini_api_key.trim().is_empty() {
             config.gemini_api_key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
         }
@@ -90,9 +98,11 @@ impl Config {
         if !self.gemini_api_key.trim().is_empty() {
             return self.gemini_api_key.trim().to_string();
         }
-        std::env::var("GEMINI_API_KEY").unwrap_or_default().trim().to_string()
+        std::env::var("GEMINI_API_KEY")
+            .unwrap_or_default()
+            .trim()
+            .to_string()
     }
-
 }
 
 /// The default config file location.

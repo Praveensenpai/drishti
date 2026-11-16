@@ -113,7 +113,6 @@ impl Resolution {
             Resolution::Unknown => "-",
         }
     }
-
 }
 
 /// Everything we can tell about a release name.
@@ -276,7 +275,8 @@ pub fn analyse(name: &str) -> ReleaseInfo {
 
 /// Detect the vertical resolution.
 fn detect_resolution(lower: &str) -> Resolution {
-    if contains_token(lower, "2160p") || contains_token(lower, "4k") || contains_token(lower, "uhd") {
+    if contains_token(lower, "2160p") || contains_token(lower, "4k") || contains_token(lower, "uhd")
+    {
         Resolution::Uhd
     } else if contains_token(lower, "1080p") || contains_token(lower, "fullhd") {
         Resolution::Fhd
@@ -318,10 +318,11 @@ fn detect_size(lower: &str) -> Option<u64> {
                 _ => None,
             };
             if let Some(mult) = multiplier
-                && let Ok(value) = num.parse::<f64>() {
-                    let bytes = (value * mult as f64) as u64;
-                    best = Some(best.map_or(bytes, |b: u64| b.max(bytes)));
-                }
+                && let Ok(value) = num.parse::<f64>()
+            {
+                let bytes = (value * mult as f64) as u64;
+                best = Some(best.map_or(bytes, |b: u64| b.max(bytes)));
+            }
             continue;
         }
         i += 1;
@@ -339,7 +340,8 @@ pub fn contains_token(haystack: &str, needle: &str) -> bool {
         let abs = start + pos;
         let before_ok = abs == 0 || !is_word_char(haystack[..abs].chars().next_back().unwrap());
         let after = abs + needle.len();
-        let after_ok = after >= haystack.len() || !is_word_char(haystack[after..].chars().next().unwrap());
+        let after_ok =
+            after >= haystack.len() || !is_word_char(haystack[after..].chars().next().unwrap());
         if before_ok && after_ok {
             return true;
         }

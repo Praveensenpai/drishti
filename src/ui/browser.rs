@@ -113,7 +113,10 @@ fn draw_filter_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         spans.push(Span::styled("  [original only]", Theme::good()));
     }
     if !app.filter.search.is_empty() {
-        spans.push(Span::styled(format!("  search: {}", app.filter.search), Theme::good()));
+        spans.push(Span::styled(
+            format!("  search: {}", app.filter.search),
+            Theme::good(),
+        ));
     }
     if spans.len() == 1 {
         spans.push(Span::styled("  all qualities", Theme::muted()));
@@ -332,7 +335,9 @@ fn draw_filter_popup(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         };
         let mark = if on { "[x]" } else { "[ ]" };
         let focus = if app.filter_focus == index {
-            Style::default().add_modifier(Modifier::BOLD).fg(Theme::ACCENT)
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Theme::ACCENT)
         } else {
             Style::default()
         };
@@ -372,20 +377,18 @@ fn draw_filter_popup(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     lines.push(Line::from(langs));
 
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            if app.filter.original_only {
-                "[x] only releases with the original language"
-            } else {
-                "[ ] only releases with the original language"
-            },
-            if app.filter.original_only {
-                Theme::good()
-            } else {
-                Theme::muted()
-            },
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        if app.filter.original_only {
+            "[x] only releases with the original language"
+        } else {
+            "[ ] only releases with the original language"
+        },
+        if app.filter.original_only {
+            Theme::good()
+        } else {
+            Theme::muted()
+        },
+    )]));
 
     let block = Theme::popup("filters").padding(ratatui::widgets::Padding::horizontal(1));
     frame.render_widget(ratatui::widgets::Clear, popup_area);
@@ -428,7 +431,11 @@ pub fn draw_language(frame: &mut ratatui::Frame, app: &mut App) {
                 Style::default().fg(Theme::TEXT)
             };
             Line::from(Span::styled(
-                format!("{}{}", if selected { "\u{276f} " } else { "  " }, forum.title),
+                format!(
+                    "{}{}",
+                    if selected { "\u{276f} " } else { "  " },
+                    forum.title
+                ),
                 style,
             ))
         })
@@ -448,4 +455,3 @@ pub fn draw_language(frame: &mut ratatui::Frame, app: &mut App) {
         rows[2],
     );
 }
-

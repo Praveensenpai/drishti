@@ -59,11 +59,20 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 LangSource::Unknown => "unknown",
             };
             (
-                format!("{}  ({} · {}% confidence · {})", o.lang.label(), src, (o.confidence * 100.0) as u8, o.lang.code()),
+                format!(
+                    "{}  ({} · {}% confidence · {})",
+                    o.lang.label(),
+                    src,
+                    (o.confidence * 100.0) as u8,
+                    o.lang.code()
+                ),
                 style,
             )
         }
-        None => ("unknown — open the thread to resolve".to_string(), Theme::muted()),
+        None => (
+            "unknown — open the thread to resolve".to_string(),
+            Theme::muted(),
+        ),
     };
 
     let third = if app.status.is_empty() {
@@ -200,4 +209,3 @@ fn draw_footer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     ];
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
-

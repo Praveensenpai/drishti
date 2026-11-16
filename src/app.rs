@@ -9,8 +9,8 @@ use crate::config::Config;
 use crate::forums::{Forum, all_web_hd};
 use crate::lang::Lang;
 use crate::model::{OriginalLang, Thread};
-use crate::quality::analyse;
 use crate::quality::Quality;
+use crate::quality::analyse;
 use crate::site::Client;
 
 /// Which pane is on screen.
@@ -63,14 +63,17 @@ impl Filter {
             None => false,
         }
     }
-
 }
 
 /// Messages sent from background tasks to the UI.
 #[derive(Debug)]
 pub enum Msg {
     /// A forum page arrived.
-    PageLoaded { threads: Vec<Thread>, page: u32, total_pages: u32 },
+    PageLoaded {
+        threads: Vec<Thread>,
+        page: u32,
+        total_pages: u32,
+    },
     /// A forum page failed.
     PageFailed(String),
     /// A thread's releases were fetched.
@@ -81,6 +84,8 @@ pub enum Msg {
     AiResolved(HashMap<String, CacheEntry>),
     /// The model call failed.
     AiFailed(String),
+    /// Result of posting a magnet to the configured endpoint.
+    MagnetPosted { ok: bool, message: String },
 }
 
 /// The whole application state.
@@ -248,8 +253,7 @@ impl App {
 
     /// The thread shown in the detail pane.
     pub fn detail_thread(&self) -> Option<&Thread> {
-        self.detail_index
-            .and_then(|i| self.threads.get(i))
+        self.detail_index.and_then(|i| self.threads.get(i))
     }
 
     /// The releases shown in the detail pane, after filtering.
@@ -267,9 +271,10 @@ impl App {
                     return false;
                 }
                 if self.detail_only_original
-                    && let Some(original) = original {
-                        return r.has_original(original);
-                    }
+                    && let Some(original) = original
+                {
+                    return r.has_original(original);
+                }
                 true
             })
             .map(|(i, _)| i)
@@ -323,7 +328,6 @@ impl App {
             .position(|i| *i == self.selected)
             .unwrap_or(0)
     }
-
 }
 
 #[cfg(test)]

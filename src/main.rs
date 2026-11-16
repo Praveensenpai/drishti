@@ -218,13 +218,10 @@ async fn list(
         }
         for handle in handles {
             if let Ok(Some(updated)) = handle.await
-                && let Some(slot) = result
-                    .threads
-                    .iter_mut()
-                    .find(|x| x.url == updated.url)
-                {
-                    *slot = updated;
-                }
+                && let Some(slot) = result.threads.iter_mut().find(|x| x.url == updated.url)
+            {
+                *slot = updated;
+            }
         }
     }
 
@@ -340,9 +337,10 @@ async fn resolve(config: &Config, forum_name: &str, page: u32) -> Result<()> {
     }
     for handle in handles {
         if let Ok(Some(updated)) = handle.await
-            && let Some(slot) = threads.iter_mut().find(|x| x.url == updated.url) {
-                *slot = updated;
-            }
+            && let Some(slot) = threads.iter_mut().find(|x| x.url == updated.url)
+        {
+            *slot = updated;
+        }
     }
 
     let key = config.api_key();
@@ -427,7 +425,11 @@ async fn update() -> Result<()> {
         .user_agent("drishti-updater")
         .build()
         .context("building HTTP client")?;
-    let resp = client.get(URL).send().await.context("downloading release")?;
+    let resp = client
+        .get(URL)
+        .send()
+        .await
+        .context("downloading release")?;
     if !resp.status().is_success() {
         anyhow::bail!("download failed: HTTP {}", resp.status());
     }
@@ -537,11 +539,14 @@ fn spawn_page_load(app: &App, forum: &'static Forum, page: u32, tx: mpsc::Unboun
         match client.fetch_forum(forum, page).await {
             Ok(result) => {
                 let threads = result.threads;
-                if tx_page.send(Msg::PageLoaded {
-                    threads: threads.clone(),
-                    page: result.page,
-                    total_pages: result.total_pages,
-                }).is_err() {
+                if tx_page
+                    .send(Msg::PageLoaded {
+                        threads: threads.clone(),
+                        page: result.page,
+                        total_pages: result.total_pages,
+                    })
+                    .is_err()
+                {
                     return;
                 }
                 let sem = Arc::new(Semaphore::new(6));
@@ -555,10 +560,16 @@ fn spawn_page_load(app: &App, forum: &'static Forum, page: u32, tx: mpsc::Unboun
                         let _guard = s.acquire().await.ok();
                         match c.fetch_thread(&thread).await {
                             Ok(updated) => {
-                                let _ = t.send(Msg::ThreadEnriched { index, thread: updated });
+                                let _ = t.send(Msg::ThreadEnriched {
+                                    index,
+                                    thread: updated,
+                                });
                             }
                             Err(e) => {
-                                let _ = t.send(Msg::ThreadFailed { index, error: e.to_string() });
+                                let _ = t.send(Msg::ThreadFailed {
+                                    index,
+                                    error: e.to_string(),
+                                });
                             }
                         }
                     }));
@@ -645,6 +656,13 @@ async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>
             app.status = format!("language lookup failed: {error}");
             dispatch_ai(app, tx);
         }
+        Msg::MagnetPosted { ok, message } => {
+            if ok {
+                app.status = message;
+            } else {
+                app.status = format!("⚠ {message}");
+            }
+        }
     }
 }
 
@@ -671,8 +689,7 @@ fn queue_ai_candidate(app: &mut App, index: usize) {
     if app.ai_pending.iter().any(|(i, _, _)| *i == index) {
         return;
     }
-    app.ai_pending
-        .push((index, key, thread.year));
+    app.ai_pending.push((index, key, thread.year));
 }
 
 /// Send the pending movies to the model in batches.
@@ -681,7 +698,10 @@ fn dispatch_ai(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
         return;
     }
     let size = app.config.ai_batch_size.max(1);
-    let batch: Vec<_> = app.ai_pending.drain(..size.min(app.ai_pending.len())).collect();
+    let batch: Vec<_> = app
+        .ai_pending
+        .drain(..size.min(app.ai_pending.len()))
+        .collect();
     app.ai_in_flight = true;
 
     let Some(gemini) = app.gemini.clone() else {
@@ -720,13 +740,11 @@ fn copy_to_clipboard(text: &str) {
 }
 
 /// Handle a key press.
-async fn handle_key(
-    app: &mut App,
-    key: KeyEvent,
-    tx: &mpsc::UnboundedSender<Msg>,
-) {
+async fn handle_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg>) {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char('c') = key.code { app.should_quit = true }
+        if let KeyCode::Char('c') = key.code {
+            app.should_quit = true
+        }
         return;
     }
 
@@ -745,18 +763,14 @@ async fn handle_key(
 
     match app.screen {
         Screen::Browser => handle_browser_key(app, key, tx).await,
-        Screen::Detail => handle_detail_key(app, key).await,
+        Screen::Detail => handle_detail_key(app, key, tx).await,
         Screen::Help => {}
         Screen::Language => handle_language_key(app, key, tx).await,
     }
 }
 
 /// Keys for the language picker.
-async fn handle_language_key(
-    app: &mut App,
-    key: KeyEvent,
-    tx: &mpsc::UnboundedSender<Msg>,
-) {
+async fn handle_language_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg>) {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.forum_index = app.forum_index.saturating_sub(1);
@@ -783,11 +797,7 @@ async fn handle_language_key(
 }
 
 /// Keys for the thread browser.
-async fn handle_browser_key(
-    app: &mut App,
-    key: KeyEvent,
-    tx: &mpsc::UnboundedSender<Msg>,
-) {
+async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg>) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.screen = Screen::Help,
@@ -876,13 +886,11 @@ async fn handle_browser_key(
                 }
             }
         }
-        KeyCode::Enter => {
-            if !app.threads.is_empty() {
-                app.detail_index = Some(app.selected);
-                app.detail_selected = 0;
-                app.screen = Screen::Detail;
-                app.detail_only_original = false;
-            }
+        KeyCode::Enter if !app.threads.is_empty() => {
+            app.detail_index = Some(app.selected);
+            app.detail_selected = 0;
+            app.screen = Screen::Detail;
+            app.detail_only_original = false;
         }
         _ => {}
     }
@@ -938,7 +946,7 @@ fn handle_filter_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Keys for the release detail pane.
-async fn handle_detail_key(app: &mut App, key: KeyEvent) {
+async fn handle_detail_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg>) {
     match key.code {
         KeyCode::Esc => app.screen = Screen::Browser,
         KeyCode::Char('q') => app.should_quit = true,
@@ -956,6 +964,42 @@ async fn handle_detail_key(app: &mut App, key: KeyEvent) {
                 if let Some(magnet) = &release.magnet {
                     copy_to_clipboard(magnet);
                     app.status = format!("magnet copied · {}", release_label(release));
+                } else {
+                    app.status = "this release has no magnet link".to_string();
+                }
+            }
+        }
+        KeyCode::Char('M') => {
+            if let Some(release) = selected_release(app) {
+                if let Some(magnet) = release.magnet.clone() {
+                    let url = app.config.magnet_post_url.trim().to_string();
+                    if url.is_empty() {
+                        app.status =
+                            "no magnet_post_url configured (set in config.toml)".to_string();
+                    } else {
+                        let tx = tx.clone();
+                        let label = release_label(release);
+                        tokio::spawn(async move {
+                            let client = reqwest::Client::new();
+                            let result = client
+                                .post(&url)
+                                .json(&serde_json::json!({"magnet": magnet}))
+                                .send()
+                                .await;
+                            let (ok, msg) = match result {
+                                Ok(resp) if resp.status().is_success() => {
+                                    (true, format!("magnet sent ({label})"))
+                                }
+                                Ok(resp) => (
+                                    false,
+                                    format!("post failed: HTTP {} ({label})", resp.status()),
+                                ),
+                                Err(e) => (false, format!("post failed: {e} ({label})")),
+                            };
+                            let _ = tx.send(Msg::MagnetPosted { ok, message: msg });
+                        });
+                        app.status = "sending magnet...".to_string();
+                    }
                 } else {
                     app.status = "this release has no magnet link".to_string();
                 }
@@ -1000,7 +1044,9 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::other(format!("{program} exited with {status}")))
+        Err(std::io::Error::other(format!(
+            "{program} exited with {status}"
+        )))
     }
 }
 

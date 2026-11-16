@@ -77,7 +77,6 @@ impl LangCache {
     pub fn put(&mut self, key: String, entry: CacheEntry) {
         self.entries.insert(key, entry);
     }
-
 }
 
 /// The Gemini client.
@@ -154,8 +153,8 @@ impl Gemini {
         if !status.is_success() {
             bail!("{model} returned HTTP {status}: {}", truncate(&text, 300));
         }
-        let value: serde_json::Value = serde_json::from_str(&text)
-            .with_context(|| format!("decoding {model} response"))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("decoding {model} response"))?;
         if let Some(err) = value.get("error") {
             bail!("{model} error: {}", truncate(&err.to_string(), 300));
         }
@@ -173,9 +172,13 @@ impl Gemini {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("model list returned HTTP {status}: {}", truncate(&text, 200));
+            bail!(
+                "model list returned HTTP {status}: {}",
+                truncate(&text, 200)
+            );
         }
-        let value: serde_json::Value = serde_json::from_str(&text).context("decoding model list")?;
+        let value: serde_json::Value =
+            serde_json::from_str(&text).context("decoding model list")?;
         let mut names = Vec::new();
         if let Some(models) = value.get("models").and_then(|m| m.as_array()) {
             for m in models {

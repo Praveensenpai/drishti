@@ -315,9 +315,10 @@ pub fn parse_list_group(group: &str) -> Vec<Lang> {
             continue;
         }
         if let Some(l) = lang_from_list_token(part)
-            && !out.contains(&l) {
-                out.push(l);
-            }
+            && !out.contains(&l)
+        {
+            out.push(l);
+        }
     }
     out
 }
@@ -327,9 +328,10 @@ pub fn scan_text(text: &str) -> Vec<Lang> {
     let mut out = Vec::new();
     for token in text.split(|c: char| !c.is_alphanumeric()) {
         if let Some(l) = lang_from_token(token)
-            && !out.contains(&l) {
-                out.push(l);
-            }
+            && !out.contains(&l)
+        {
+            out.push(l);
+        }
     }
     out
 }
@@ -363,7 +365,6 @@ impl LangSet {
     pub fn is_multi_audio(&self) -> bool {
         self.audio.len() > 1
     }
-
 
     /// Compact display, e.g. `Tam+Tel+Mal+Kan`.
     pub fn compact(&self) -> String {
@@ -412,7 +413,14 @@ fn short_code(l: Lang) -> &'static str {
 }
 
 /// Markers that mark a release as a dub rather than the original audio.
-const DUB_MARKERS: &[&str] = &["dubbed", "dub", "hindi dub", "kan dub", "tel dub", "mal dub"];
+const DUB_MARKERS: &[&str] = &[
+    "dubbed",
+    "dub",
+    "hindi dub",
+    "kan dub",
+    "tel dub",
+    "mal dub",
+];
 
 /// Markers that mark a release as subtitled only.
 const SUB_MARKERS: &[&str] = &["subtitled", "subs", "subbed"];

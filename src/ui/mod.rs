@@ -54,7 +54,9 @@ impl Theme {
 
     /// Style for the focused element.
     pub fn focus() -> Style {
-        Style::default().fg(Theme::ACCENT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Theme::ACCENT)
+            .add_modifier(Modifier::BOLD)
     }
 }
 

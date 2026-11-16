@@ -81,7 +81,6 @@ impl Release {
     pub fn has_original(&self, original: Lang) -> bool {
         self.langs.all().contains(&original)
     }
-
 }
 
 /// Split a thread title into a movie name, a year and the remaining tags.
@@ -93,15 +92,18 @@ pub fn split_title(title: &str) -> (String, Option<u16>, String) {
     let mut rest = trimmed.to_string();
 
     if let Some(open) = trimmed.find('(')
-        && let Some(close) = trimmed[open..].find(')') {
-            let inner = &trimmed[open + 1..open + close];
-            if inner.len() == 4 && inner.chars().all(|c| c.is_ascii_digit())
-                && let Ok(y) = inner.parse::<u16>() {
-                    year = Some(y);
-                    name = trimmed[..open].trim().to_string();
-                    rest = trimmed[open + close + 1..].trim().to_string();
-                }
+        && let Some(close) = trimmed[open..].find(')')
+    {
+        let inner = &trimmed[open + 1..open + close];
+        if inner.len() == 4
+            && inner.chars().all(|c| c.is_ascii_digit())
+            && let Ok(y) = inner.parse::<u16>()
+        {
+            year = Some(y);
+            name = trimmed[..open].trim().to_string();
+            rest = trimmed[open + close + 1..].trim().to_string();
         }
+    }
 
     // Strip trailing separators from the movie name.
     while name.ends_with('-') || name.ends_with('–') || name.ends_with('—') {
@@ -118,9 +120,8 @@ mod tests {
 
     #[test]
     fn splits_peddi_title() {
-        let (name, year, rest) = split_title(
-            "Peddi (2026) Kannada TRUE WEB-DL - [4K, 1080p & 720p - AVC / HEVC]",
-        );
+        let (name, year, rest) =
+            split_title("Peddi (2026) Kannada TRUE WEB-DL - [4K, 1080p & 720p - AVC / HEVC]");
         assert_eq!(name, "Peddi");
         assert_eq!(year, Some(2026));
         assert!(rest.starts_with("Kannada"));

@@ -12,7 +12,7 @@ use scraper::{ElementRef, Html, Selector};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use crate::forums::{Forum};
+use crate::forums::Forum;
 use crate::lang::{LangSet, parse_release_langs};
 use crate::model::{Release, Thread, split_title};
 use crate::quality::analyse;
@@ -44,10 +44,7 @@ impl Client {
             .redirect(reqwest::redirect::Policy::limited(8))
             .build()
             .context("failed to build HTTP client")?;
-        let thread_cache_dir = cache_dir
-            .parent()
-            .unwrap_or(&cache_dir)
-            .join("threads");
+        let thread_cache_dir = cache_dir.parent().unwrap_or(&cache_dir).join("threads");
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -79,7 +76,10 @@ impl Client {
         let resp = self
             .http
             .get(url)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("Referer", format!("{}/index.php?/forums/", self.base_url))
             .send()
@@ -445,13 +445,7 @@ pub fn parse_releases(body: &str) -> Result<Vec<Release>> {
         };
         let header = strip_tags(&html[header_start..group_anchor.start]);
 
-        if let Some(release) = build_release(
-            header,
-            torrent_name,
-            magnet,
-            direct,
-            torrent,
-        ) {
+        if let Some(release) = build_release(header, torrent_name, magnet, direct, torrent) {
             releases.push(release);
         }
     }
@@ -753,10 +747,7 @@ mod tests {
         assert!(releases[0].torrent.is_some());
 
         assert_eq!(releases[1].langs.text, vec![crate::lang::Lang::Kannada]);
-        assert_eq!(
-            releases[1].info.quality,
-            crate::quality::Quality::WebDl
-        );
+        assert_eq!(releases[1].info.quality, crate::quality::Quality::WebDl);
     }
 }
 
