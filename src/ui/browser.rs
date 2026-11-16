@@ -271,6 +271,8 @@ fn draw_footer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         Span::styled("select  ", Theme::muted()),
         Span::styled("↵ ", Theme::focus()),
         Span::styled("releases  ", Theme::muted()),
+        Span::styled("p ", Theme::focus()),
+        Span::styled("open post  ", Theme::muted()),
         Span::styled("[ ] ", Theme::focus()),
         Span::styled("forum  ", Theme::muted()),
         Span::styled("←→ ", Theme::focus()),

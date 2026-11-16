@@ -868,6 +868,14 @@ async fn handle_browser_key(
                 spawn_page_load(app, forum, app.page, tx.clone());
             }
         }
+        KeyCode::Char('p') => {
+            if let Some(thread) = app.threads.get(app.selected) {
+                match open_in_browser(&thread.url) {
+                    Ok(()) => app.status = "opened the post in your browser".to_string(),
+                    Err(e) => app.status = format!("could not open browser: {e}"),
+                }
+            }
+        }
         KeyCode::Enter => {
             if !app.threads.is_empty() {
                 app.detail_index = Some(app.selected);
@@ -966,7 +974,7 @@ async fn handle_detail_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('p') | KeyCode::Enter => {
             if let Some(thread) = app.detail_thread() {
                 match open_in_browser(&thread.url) {
-                    Ok(()) => app.status = "opened the thread in your browser".to_string(),
+                    Ok(()) => app.status = "opened the post in your browser".to_string(),
                     Err(e) => app.status = format!("could not open browser: {e}"),
                 }
             }
