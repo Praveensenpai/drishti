@@ -435,7 +435,7 @@ pub fn plan_batches(keys: &[String], max_items: usize, max_chars: usize) -> Vec<
 /// The default cache location.
 pub fn default_cache_path() -> PathBuf {
     let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("drishti").join("langcache.json")
+    base.join("drushti").join("langcache.json")
 }
 
 /// The original language of a thread, from the model, the cache or the heuristic.

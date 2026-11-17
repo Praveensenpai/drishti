@@ -882,7 +882,7 @@ fn now_secs() -> u64 {
 pub fn default_cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("drishti")
+        .join("drushti")
         .join("http")
 }
 

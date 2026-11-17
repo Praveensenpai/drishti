@@ -1,5 +1,6 @@
 //! Configuration, persisted as TOML under the user's config directory.
 
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -77,7 +78,129 @@ impl Default for Config {
     }
 }
 
+/// Read a line from stdin, using `default` when the user just presses Enter.
+fn prompt_line(label: &str, default: &str) -> Result<String> {
+    print!("{label} [{default}]: ");
+    io::stdout().flush().ok();
+    let mut line = String::new();
+    io::stdin().lock().read_line(&mut line)?;
+    let entered = line.trim();
+    Ok(if entered.is_empty() {
+        default.to_string()
+    } else {
+        entered.to_string()
+    })
+}
+
+/// Ask a yes/no question, returning `default` on an empty answer.
+fn prompt_bool(label: &str, default: bool) -> Result<bool> {
+    let hint = if default { "Y/n" } else { "y/N" };
+    let answer = prompt_line(
+        &format!("{label} ({hint})"),
+        if default { "y" } else { "n" },
+    )?;
+    Ok(matches!(
+        answer.to_ascii_lowercase().as_str(),
+        "y" | "yes" | "true" | "1"
+    ))
+}
+
+/// Ask for a number, falling back to `default` on empty/invalid input.
+fn prompt_u64(label: &str, default: u64) -> Result<u64> {
+    let answer = prompt_line(label, &default.to_string())?;
+    Ok(answer.parse::<u64>().unwrap_or(default))
+}
+
+/// Parse a comma-separated list of quality names.
+fn parse_qualities(input: &str) -> Vec<Quality> {
+    let all = [
+        Quality::WebDl,
+        Quality::HdRip,
+        Quality::WebRip,
+        Quality::Bluray,
+        Quality::TvRip,
+        Quality::DvdRip,
+        Quality::HdRip,
+        Quality::Theater,
+        Quality::Cam,
+        Quality::Unknown,
+    ];
+    let wanted: Vec<String> = input.split(',').map(|s| s.trim().to_string()).collect();
+    all.into_iter()
+        .filter(|q| wanted.iter().any(|w| w.eq_ignore_ascii_case(q.label())))
+        .collect()
+}
+
 impl Config {
+    /// True when stdin is interactive, so a wizard can safely ask questions.
+    pub fn interactive() -> bool {
+        io::stdin().is_terminal()
+    }
+
+    /// Run the first-run / reconfigure wizard, updating `config` in place.
+    pub fn configure(config: &mut Config) -> Result<()> {
+        println!("\ndrushti setup — press Enter to accept the value in [brackets]\n");
+
+        config.base_url = prompt_line("Board URL", &config.base_url)?;
+
+        let key_default = if config.gemini_api_key.trim().is_empty() {
+            "(none)"
+        } else {
+            "(already set — enter to keep)"
+        };
+        let key = prompt_line("Gemini API key", key_default)?;
+        if key != key_default && !key.trim().is_empty() {
+            config.gemini_api_key = key.trim().to_string();
+        }
+
+        let models = config.gemini_models.join(", ");
+        let models = prompt_line("Gemini models (comma separated)", &models)?;
+        config.gemini_models = models
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let qualities = config
+            .allowed_qualities
+            .iter()
+            .map(|q| q.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let qualities = prompt_line("Allowed qualities (comma separated)", &qualities)?;
+        let parsed = parse_qualities(&qualities);
+        if !parsed.is_empty() {
+            config.allowed_qualities = parsed;
+        }
+
+        config.original_only = prompt_bool(
+            "Only show original-language dubs filtered",
+            config.original_only,
+        )?;
+        config.resolve_on_load =
+            prompt_bool("Resolve original languages on load", config.resolve_on_load)?;
+        config.auto_update = prompt_bool("Check for updates once a day", config.auto_update)?;
+        config.cache_ttl_minutes =
+            prompt_u64("Page cache TTL (minutes)", config.cache_ttl_minutes as u64)? as u32;
+        config.ai_cache_hours = prompt_u64("AI answer cache TTL (hours)", config.ai_cache_hours)?;
+        config.ai_batch_size = prompt_u64("AI batch size", config.ai_batch_size as u64)? as usize;
+
+        let magnet_default = if config.magnet_post_url.trim().is_empty() {
+            "(none)".to_string()
+        } else {
+            config.magnet_post_url.clone()
+        };
+        let magnet = prompt_line("ryoiki magnet endpoint (blank to disable)", &magnet_default)?;
+        config.magnet_post_url = if magnet == "(none)" {
+            String::new()
+        } else {
+            magnet.trim().to_string()
+        };
+
+        println!("\nsetup complete\n");
+        Ok(())
+    }
+
     /// Load the config, falling back to defaults when the file is missing.
     pub fn load(path: &Path) -> Result<Config> {
         if !path.exists() {
@@ -119,7 +242,7 @@ impl Config {
 /// The default config file location.
 pub fn default_config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("drishti").join("config.toml")
+    base.join("drushti").join("config.toml")
 }
 
 #[cfg(test)]

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Drishti installer — curl -fsSL <url> | bash
+# Drushti installer — curl -fsSL <url> | bash
 set -euo pipefail
 
-BIN_DIR="${DRISHTI_BIN:-$HOME/.local/bin}"
-REPO="${DRISHTI_REPO:-https://github.com/Praveensenpai/drishti.git}"
-SRC="${DRISHTI_SRC:-$HOME/.local/share/drishti/src}"
-RELEASE_URL="https://github.com/Praveensenpai/drishti/releases/latest/download/drishti-linux-x86_64"
+BIN_DIR="${DRUSHTI_BIN:-$HOME/.local/bin}"
+REPO="${DRUSHTI_REPO:-https://github.com/Praveensenpai/drushti.git}"
+SRC="${DRUSHTI_SRC:-$HOME/.local/share/drushti/src}"
+RELEASE_URL="https://github.com/Praveensenpai/drushti/releases/latest/download/drushti-linux-x86_64"
 
 path_hint() {
   case ":$PATH:" in
@@ -14,16 +14,16 @@ path_hint() {
   esac
 }
 
-echo "==> Drishti installer"
+echo "==> Drushti installer"
 
 # 1. Prefer the prebuilt binary (no Rust needed) -----------------------------
 mkdir -p "$BIN_DIR"
-if curl -fsSL "$RELEASE_URL" -o "$BIN_DIR/drishti.tmp" 2>/dev/null; then
-  chmod +x "$BIN_DIR/drishti.tmp"
-  mv "$BIN_DIR/drishti.tmp" "$BIN_DIR/drishti"
-  echo "==> installed prebuilt binary to $BIN_DIR/drishti"
+if curl -fsSL "$RELEASE_URL" -o "$BIN_DIR/drushti.tmp" 2>/dev/null; then
+  chmod +x "$BIN_DIR/drushti.tmp"
+  mv "$BIN_DIR/drushti.tmp" "$BIN_DIR/drushti"
+  echo "==> installed prebuilt binary to $BIN_DIR/drushti"
   path_hint
-  echo "==> Done!  Run:  drishti"
+  echo "==> Done!  Run:  drushti"
   exit 0
 fi
 
@@ -43,7 +43,7 @@ else
   mkdir -p "$(dirname "$SRC")"
   git clone --depth 1 "$REPO" "$SRC"
 fi
-echo "==> Building & installing drishti…"
+echo "==> Building & installing drushti…"
 cargo install --path "$SRC" --force
 path_hint
-echo "==> Done!  Run:  drishti"
+echo "==> Done!  Run:  drushti"

@@ -24,11 +24,11 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp target/release/drishti dist/drishti-linux-x86_64
-          chmod +x dist/drishti-linux-x86_64
+          cp target/release/drushti dist/drushti-linux-x86_64
+          chmod +x dist/drushti-linux-x86_64
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/drishti-linux-x86_64
+          files: dist/drushti-linux-x86_64
           generate_release_notes: true

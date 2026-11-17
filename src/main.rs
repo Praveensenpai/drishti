@@ -29,7 +29,7 @@ use crate::site::PageLoad;
 
 #[derive(Parser)]
 #[command(
-    name = "drishti",
+    name = "drushti",
     version,
     about = "Browse 1TamilMV for WEB-DL releases, filtered by original language"
 )]
@@ -95,9 +95,11 @@ enum Command {
     Probe,
     /// Print the configuration file path.
     ConfigPath,
+    /// Interactive setup: ask for all settings and save them.
+    Config,
     /// Write a default configuration file.
     Init,
-    /// Update drishti to the latest release (downloads from GitHub; works anywhere).
+    /// Update drushti to the latest release (downloads from GitHub; works anywhere).
     Update,
 }
 
@@ -124,11 +126,26 @@ async fn main() -> Result<()> {
     if no_cache {
         config.cache_ttl_minutes = 0;
     }
+
+    // First run: no config file and launching the TUI interactively. Ask the
+    // user for every setting once, then save it so this never prompts again.
+    if cli.command.is_none() && !config_path.exists() && Config::interactive() {
+        Config::configure(&mut config)?;
+        config.save(&config_path)?;
+        println!("configuration saved to {}", config_path.display());
+    }
+
     match cli.command {
         Some(Command::Probe) => probe(&config).await,
         Some(Command::Resolve { forum, page }) => resolve(&config, &forum, page, to_page).await,
         Some(Command::ConfigPath) => {
             println!("{}", config_path.display());
+            Ok(())
+        }
+        Some(Command::Config) => {
+            Config::configure(&mut config)?;
+            config.save(&config_path)?;
+            println!("configuration saved to {}", config_path.display());
             Ok(())
         }
         Some(Command::Init) => {
@@ -416,14 +433,14 @@ fn apply_map(threads: &mut [Thread], map: &std::collections::HashMap<String, Cac
     }
 }
 
-/// Update drishti by downloading the latest prebuilt release binary from
+/// Update drushti by downloading the latest prebuilt release binary from
 /// GitHub. Works from any directory — no local source checkout needed.
 async fn update() -> Result<()> {
     const URL: &str =
-        "https://github.com/Praveensenpai/drishti/releases/latest/download/drishti-linux-x86_64";
+        "https://github.com/Praveensenpai/drushti/releases/latest/download/drushti-linux-x86_64";
     println!("==> downloading latest release");
     let client = reqwest::Client::builder()
-        .user_agent("drishti-updater")
+        .user_agent("drushti-updater")
         .build()
         .context("building HTTP client")?;
     let resp = client
@@ -446,7 +463,7 @@ async fn update() -> Result<()> {
         std::fs::set_permissions(&tmp, perms)?;
     }
     std::fs::rename(&tmp, &exe).context("replacing executable")?;
-    println!("==> drishti updated to the latest release");
+    println!("==> drushti updated to the latest release");
     Ok(())
 }
 
@@ -454,10 +471,10 @@ async fn update() -> Result<()> {
 fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("drishti")
+        .join("drushti")
 }
 
-/// Spawn `drishti update` in the background once a day (best effort).
+/// Spawn `drushti update` in the background once a day (best effort).
 fn maybe_auto_update(config: &Config) {
     if !config.auto_update {
         return;

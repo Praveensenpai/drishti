@@ -53,12 +53,15 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     };
     let (orig_text, orig_style) = match original {
         Some(o) => {
-            let style = match o.source {
-                LangSource::Ai => Style::default().fg(Theme::GOOD),
-                LangSource::MultiAudio => Style::default().fg(Theme::TEXT),
-                LangSource::TitleTag => Style::default().fg(Theme::WARN),
-                LangSource::Verified => Style::default().fg(Theme::GOOD),
-                _ => Theme::muted(),
+            let conf = o.confidence;
+            let style = if o.source == LangSource::Verified {
+                Style::default().fg(Theme::GOOD)
+            } else if o.source == LangSource::Unknown || conf < 0.5 {
+                Style::default().fg(Theme::BAD)
+            } else if conf < 0.8 {
+                Style::default().fg(Theme::WARN)
+            } else {
+                Style::default().fg(Theme::GOOD)
             };
             let src = match o.source {
                 LangSource::Ai => "AI",

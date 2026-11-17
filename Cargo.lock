@@ -685,8 +685,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "drishti"
-version = "0.2.7"
+name = "drushti"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

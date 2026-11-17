@@ -190,26 +190,25 @@ fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 Some(o) => {
                     // Check if any release is marked dubbed
                     let has_dubbed = thread.releases.iter().any(|r| r.langs.dubbed);
-                    let (dubbed_label, _dub_style) = if has_dubbed {
-                        // Muted style for dubbed indicator
-                        let muted = Style::default().fg(Theme::MUTED);
-                        ("(Dubbed)".to_string(), muted)
+                    let dubbed_label = if has_dubbed { "(Dubbed) " } else { "" };
+
+                    // Colour the language by how confident we are in the answer:
+                    // green = high, yellow = medium, red = low/misleading,
+                    // muted = no answer. A verified answer is always green.
+                    let conf = o.confidence;
+                    let style = if o.source == LangSource::Verified {
+                        Style::default().fg(Theme::GOOD)
+                    } else if o.source == LangSource::Unknown || conf < 0.5 {
+                        Style::default().fg(Theme::BAD)
+                    } else if conf < 0.8 {
+                        Style::default().fg(Theme::WARN)
                     } else {
-                        (String::new(), Style::default())
+                        Style::default().fg(Theme::GOOD)
                     };
-                    let style = match o.source {
-                        LangSource::Ai => Style::default().fg(Theme::GOOD),
-                        LangSource::MultiAudio => Style::default().fg(Theme::TEXT),
-                        LangSource::TitleTag => Style::default().fg(Theme::WARN),
-                        LangSource::Verified => Style::default().fg(Theme::GOOD),
-                        _ => Theme::muted(),
-                    };
-                    // Prepend dubbed badge if present, otherwise just the lang text
-                    let full_text = if !dubbed_label.is_empty() {
-                        format!("{} {}", dubbed_label, o.lang.label())
-                    } else {
-                        o.lang.label().to_string()
-                    };
+
+                    // Show the confidence percentage next to the language.
+                    let pct = (conf * 100.0).round() as u8;
+                    let full_text = format!("{}{} {}%", dubbed_label, o.lang.label(), pct);
                     (full_text, style)
                 }
                 None => ("?".to_string(), Theme::muted()),
@@ -274,7 +273,7 @@ fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         [
             Constraint::Length(3),
             Constraint::Min(24),
-            Constraint::Length(10),
+            Constraint::Length(13),
             Constraint::Length(8),
             Constraint::Length(6),
             Constraint::Length(6),
