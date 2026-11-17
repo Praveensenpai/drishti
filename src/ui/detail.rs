@@ -43,6 +43,14 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     };
 
     let original = app.effective_original(thread);
+    // Check if any release in the thread is marked dubbed
+    let has_dubbed = thread.releases.iter().any(|r| r.langs.dubbed);
+    let (dubbed_label, _dub_style) = if has_dubbed {
+        let muted = Style::default().fg(Theme::MUTED);
+        ("(Dubbed)".to_string(), muted)
+    } else {
+        (String::new(), Style::default())
+    };
     let (orig_text, orig_style) = match original {
         Some(o) => {
             let style = match o.source {
@@ -60,10 +68,16 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 LangSource::Verified => "verified",
                 LangSource::Unknown => "unknown",
             };
+            // Prepend dubbed badge if present
+            let full_orig_text = if !dubbed_label.is_empty() {
+                format!("{} {}", dubbed_label, o.lang.label())
+            } else {
+                o.lang.label().to_string()
+            };
             (
                 format!(
                     "{}  ({} · {}% confidence · {})",
-                    o.lang.label(),
+                    full_orig_text,
                     src,
                     (o.confidence * 100.0) as u8,
                     o.lang.code()

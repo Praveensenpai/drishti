@@ -188,6 +188,15 @@ fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
             let (orig_text, orig_style) = match original {
                 Some(o) => {
+                    // Check if any release is marked dubbed
+                    let has_dubbed = thread.releases.iter().any(|r| r.langs.dubbed);
+                    let (dubbed_label, _dub_style) = if has_dubbed {
+                        // Muted style for dubbed indicator
+                        let muted = Style::default().fg(Theme::MUTED);
+                        ("(Dubbed)".to_string(), muted)
+                    } else {
+                        (String::new(), Style::default())
+                    };
                     let style = match o.source {
                         LangSource::Ai => Style::default().fg(Theme::GOOD),
                         LangSource::MultiAudio => Style::default().fg(Theme::TEXT),
@@ -195,7 +204,13 @@ fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                         LangSource::Verified => Style::default().fg(Theme::GOOD),
                         _ => Theme::muted(),
                     };
-                    (o.lang.label().to_string(), style)
+                    // Prepend dubbed badge if present, otherwise just the lang text
+                    let full_text = if !dubbed_label.is_empty() {
+                        format!("{} {}", dubbed_label, o.lang.label())
+                    } else {
+                        o.lang.label().to_string()
+                    };
+                    (full_text, style)
                 }
                 None => ("?".to_string(), Theme::muted()),
             };
