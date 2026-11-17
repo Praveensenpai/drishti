@@ -1,6 +1,6 @@
 [package]
 name = "drishti"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 description = "A TUI browser/downloader for 1TamilMV: WEB-DL only, original-language aware"
 license = "MIT"

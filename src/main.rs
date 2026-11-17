@@ -726,18 +726,37 @@ async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>
         }
         Msg::AiResolved(map) => {
             app.ai_in_flight = false;
+            app.ai_failures = 0;
             let count = map.len();
             for (key, entry) in &map {
                 app.cache.put(key.clone(), entry.clone());
             }
             let _ = app.cache.save(&app.cache_path);
             app.apply_ai(&map);
+            // Drop the in-flight batch: every key in it was either answered or
+            // is now cached as unknown, so none should be retried.
+            app.ai_in_flight_keys.clear();
             app.status = format!("resolved {count} movies");
             dispatch_ai(app, tx);
         }
         Msg::AiFailed(error) => {
             app.ai_in_flight = false;
-            app.status = format!("language lookup failed: {error}");
+            app.ai_failures += 1;
+            // Put the failed batch back at the front so it is retried on the
+            // next dispatch instead of being lost until the app restarts.
+            let failed = std::mem::take(&mut app.ai_in_flight_keys);
+            if app.ai_failures < 3 {
+                for key in failed.into_iter().rev() {
+                    if !app.ai_queue.contains(&key) {
+                        app.ai_queue.insert(0, key);
+                    }
+                }
+            }
+            app.status = if app.ai_failures >= 3 {
+                "language lookup unavailable; will retry next launch".to_string()
+            } else {
+                format!("language lookup failed: {error}")
+            };
             dispatch_ai(app, tx);
         }
         Msg::MagnetPosted { ok, message } => {
@@ -752,7 +771,7 @@ async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>
 
 /// Send the next queued batch to the model.
 fn dispatch_ai(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
-    if app.scan.active || app.ai_in_flight || app.ai_queue.is_empty() {
+    if app.scan.active || app.ai_in_flight || app.ai_queue.is_empty() || app.ai_failures >= 3 {
         return;
     }
     let Some(gemini) = app.gemini.clone() else {
@@ -768,6 +787,7 @@ fn dispatch_ai(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
     };
     app.ai_queue.drain(..batch.len());
     app.ai_in_flight = true;
+    app.ai_in_flight_keys = batch.clone();
     app.ai_batches_done += 1;
     let pause = app.config.ai_batch_pause_ms;
     let wait = app.ai_batches_done > 1;

@@ -167,6 +167,10 @@ pub struct App {
 
     /// Movie cache keys waiting for model resolution.
     pub ai_queue: Vec<String>,
+    /// The batch currently in flight, restored to the queue if the app exits.
+    pub ai_in_flight_keys: Vec<String>,
+    /// Consecutive batch failures, bounded to avoid infinite retry loops.
+    pub ai_failures: u32,
     /// Batches already sent to the model.
     pub ai_batches_done: u32,
     pub ai_in_flight: bool,
@@ -231,6 +235,8 @@ impl App {
             detail_selected: 0,
             detail_only_original: false,
             ai_queue: Vec::new(),
+            ai_in_flight_keys: Vec::new(),
+            ai_failures: 0,
             ai_batches_done: 0,
             ai_in_flight: false,
             should_quit: false,
@@ -292,6 +298,8 @@ impl App {
         self.selected = 0;
         self.detail_index = None;
         self.ai_queue.clear();
+        self.ai_in_flight_keys.clear();
+        self.ai_failures = 0;
         self.ai_batches_done = 0;
         self.ai_in_flight = false;
         self.loading = true;
@@ -303,6 +311,9 @@ impl App {
     /// Whether a thread needs a model answer.
     fn ai_key(&self, thread: &Thread) -> Option<String> {
         self.gemini.as_ref()?;
+        if !self.config.resolve_on_load {
+            return None;
+        }
         let key = cache_key(&thread.movie, thread.year);
         if self.cache.get_with_ttl(&key, self.ai_ttl_secs()).is_some() {
             return None;

@@ -328,27 +328,32 @@ fn parse_reply(text: &str) -> HashMap<String, CacheEntry> {
         } else {
             parsed
         };
-        if lang == Lang::Other {
-            continue;
-        }
-        let confidence = match row
-            .get("confidence")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "high" => 0.9,
-            "medium" => 0.65,
-            "low" => 0.4,
-            _ => 0.6,
+        // Cache the answer even when the model could not name a language.
+        // Otherwise that movie is treated as a cache miss and re-asked on
+        // every single launch. An unknown answer is a real answer: "und".
+        let (lang, confidence, source) = if lang == Lang::Other {
+            (Lang::Other, 0.0, LangSource::Unknown)
+        } else {
+            let confidence = match row
+                .get("confidence")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "high" => 0.9,
+                "medium" => 0.65,
+                "low" => 0.4,
+                _ => 0.6,
+            };
+            (lang, confidence, LangSource::Ai)
         };
         out.insert(
             key.trim().to_string(),
             CacheEntry {
                 lang,
                 confidence,
-                source: LangSource::Ai,
+                source,
                 resolved_at: now_secs(),
             },
         );
@@ -504,9 +509,13 @@ mod tests {
     }
 
     #[test]
-    fn ignores_unknown_codes() {
+    fn caches_unknown_codes_so_they_are_not_reasked() {
         let reply = r#"[{"key":"X","language":"zzz"}]"#;
-        assert!(parse_reply(reply).is_empty());
+        let parsed = parse_reply(reply);
+        let entry = parsed.get("X").expect("unknown answer must be cached");
+        assert_eq!(entry.lang, Lang::Other);
+        assert_eq!(entry.source, LangSource::Unknown);
+        assert_eq!(entry.confidence, 0.0);
     }
 
     #[test]
