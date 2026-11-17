@@ -23,6 +23,10 @@ pub fn draw(frame: &mut ratatui::Frame, _app: &mut App) {
         ("g / G", "jump to the first / last row"),
         ("↵", "open the selected thread's releases"),
         ("p", "open the selected post in your browser"),
+        (
+            "u",
+            "copy the selected post link to the clipboard (works over SSH)",
+        ),
         ("esc", "go back"),
         ("f", "open the filter panel"),
         ("space", "toggle the highlighted filter"),

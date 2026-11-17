@@ -137,7 +137,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn parse_release_langs (name : & str) -> LangSet
   ```
 
-### `src/main.rs` (Role: general, Lines: 1141)
+### `src/main.rs` (Role: general, Lines: 1158)
 - **Responsibility**: Core general logic in src/main.rs
 - **Imports**: use std :: path :: PathBuf , use anyhow :: { Context , Result } , use clap :: { Parser , Subcommand } , use crossterm :: event :: { Event , EventStream , KeyCode , KeyEvent , KeyEventKind , KeyModifiers } , use futures_util :: StreamExt , use tokio :: sync :: mpsc , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , effective_original , plan_batches } , use crate :: app :: { App , Msg , ScanProgress , Screen } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: { Quality , analyse , human_size } , use crate :: site :: PageLoad 
 
@@ -205,7 +205,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn default_cache_dir () -> PathBuf
   ```
 
-### `src/ui/browser.rs` (Role: tui, Lines: 503)
+### `src/ui/browser.rs` (Role: tui, Lines: 505)
 - **Responsibility**: Core tui logic in src/ui/browser.rs
 - **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span , Text } , use ratatui :: widgets :: { Cell , Gauge , Paragraph , Row , Table , TableState , Wrap } , use crate :: app :: App , use crate :: lang :: Lang , use crate :: model :: LangSource , use crate :: quality :: { Quality , analyse , human_size } , use crate :: ui :: Theme 
 - **Public Functions & Signatures**:
@@ -214,7 +214,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn draw_language (frame : & mut ratatui :: Frame , app : & mut App)
   ```
 
-### `src/ui/detail.rs` (Role: tui, Lines: 230)
+### `src/ui/detail.rs` (Role: tui, Lines: 232)
 - **Responsibility**: Core tui logic in src/ui/detail.rs
 - **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Cell , Paragraph , Row , Table , TableState } , use crate :: app :: App , use crate :: model :: LangSource , use crate :: quality :: { Quality , human_size } , use crate :: ui :: { Theme , truncate } 
 - **Public Functions & Signatures**:
@@ -222,7 +222,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn draw (frame : & mut ratatui :: Frame , app : & mut App)
   ```
 
-### `src/ui/help.rs` (Role: tui, Lines: 82)
+### `src/ui/help.rs` (Role: tui, Lines: 86)
 - **Responsibility**: Core tui logic in src/ui/help.rs
 - **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout } , use ratatui :: style :: Style , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Paragraph , Wrap } , use crate :: app :: App , use crate :: ui :: Theme 
 - **Public Functions & Signatures**:

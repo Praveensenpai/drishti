@@ -218,6 +218,8 @@ fn draw_footer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let spans = vec![
         Span::styled(" ↵/p ", Theme::focus()),
         Span::styled("open post  ", Theme::muted()),
+        Span::styled("u ", Theme::focus()),
+        Span::styled("copy link  ", Theme::muted()),
         Span::styled("m ", Theme::focus()),
         Span::styled("copy magnet  ", Theme::muted()),
         Span::styled("o ", Theme::focus()),

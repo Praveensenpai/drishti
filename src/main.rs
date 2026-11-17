@@ -957,6 +957,11 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
                 }
             }
         }
+        KeyCode::Char('u') => {
+            if let Some(url) = app.threads.get(app.selected).map(|t| t.url.clone()) {
+                copy_post_link(app, &url);
+            }
+        }
         KeyCode::Enter if !app.threads.is_empty() => {
             app.detail_index = Some(app.selected);
             app.detail_selected = 0;
@@ -1084,6 +1089,11 @@ async fn handle_detail_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSen
                 }
             }
         }
+        KeyCode::Char('u') => {
+            if let Some(url) = app.detail_thread().map(|t| t.url.clone()) {
+                copy_post_link(app, &url);
+            }
+        }
         _ => {}
     }
 }
@@ -1095,6 +1105,13 @@ fn release_label(release: &crate::model::Release) -> String {
         release.info.resolution.label(),
         crate::quality::human_size(release.info.size_bytes)
     )
+}
+
+/// Copy a post URL to the clipboard (OSC 52) and report it.
+/// Useful in remote/SSH sessions where `p` cannot open a browser.
+fn copy_post_link(app: &mut App, url: &str) {
+    copy_to_clipboard(url);
+    app.status = "post link copied".to_string();
 }
 
 /// Open a URL in the system's default browser.
