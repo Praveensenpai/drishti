@@ -3,7 +3,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Cell, Gauge, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::app::App;
 use crate::lang::Lang;
@@ -74,6 +74,12 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Theme::MUTED
         }),
     ));
+    if let Some(progress) = app.progress_text() {
+        spans.push(Span::styled(
+            format!("  {progress}"),
+            Style::default().fg(Theme::WARN),
+        ));
+    }
 
     let block = Theme::block("").borders(ratatui::widgets::Borders::ALL);
     frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
@@ -129,6 +135,30 @@ fn draw_filter_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 /// The thread table.
 fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let visible = app.visible_threads();
+    if visible.is_empty() && (app.loading || app.scan.active) {
+        let ratio = if app.scan.active {
+            app.scan.ratio()
+        } else {
+            0.0
+        };
+        let label = if app.scan.active {
+            format!(
+                "{} scanning page {}/{}…",
+                app.spinner(),
+                app.page,
+                app.total_pages.max(1)
+            )
+        } else {
+            format!("{} loading page {}…", app.spinner(), app.page)
+        };
+        let gauge = Gauge::default()
+            .block(Theme::block("threads"))
+            .gauge_style(Style::default().fg(Theme::ACCENT))
+            .ratio(ratio)
+            .label(label);
+        frame.render_widget(gauge, area);
+        return;
+    }
     let header = Row::new(vec![
         Cell::from("#"),
         Cell::from("Movie"),
@@ -162,6 +192,7 @@ fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                         LangSource::Ai => Style::default().fg(Theme::GOOD),
                         LangSource::MultiAudio => Style::default().fg(Theme::TEXT),
                         LangSource::TitleTag => Style::default().fg(Theme::WARN),
+                        LangSource::Verified => Style::default().fg(Theme::GOOD),
                         _ => Theme::muted(),
                     };
                     (o.lang.label().to_string(), style)
@@ -175,6 +206,7 @@ fn draw_table(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                     LangSource::MultiAudio => "multi",
                     LangSource::TitleTag => "tag",
                     LangSource::Forum => "forum",
+                    LangSource::Verified => "web",
                     LangSource::Unknown => "?",
                 })
                 .unwrap_or("?");

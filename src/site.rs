@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use futures_util::StreamExt;
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use std::sync::LazyLock;
 
 use crate::forums::Forum;
 use crate::lang::{LangSet, parse_release_langs};
-use crate::model::{Release, Thread, split_title};
+use crate::model::{Release, StoredThread, Thread, split_title};
 use crate::quality::analyse;
 
 /// Default board address.
@@ -32,6 +33,7 @@ pub struct Client {
     cache_ttl: Duration,
     thread_cache_dir: PathBuf,
     thread_cache_ttl: Duration,
+    page_cache_dir: PathBuf,
 }
 
 impl Client {
@@ -44,7 +46,9 @@ impl Client {
             .redirect(reqwest::redirect::Policy::limited(8))
             .build()
             .context("failed to build HTTP client")?;
-        let thread_cache_dir = cache_dir.parent().unwrap_or(&cache_dir).join("threads");
+        let base = cache_dir.parent().unwrap_or(&cache_dir);
+        let thread_cache_dir = base.join("threads");
+        let page_cache_dir = base.join("pages");
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -52,6 +56,7 @@ impl Client {
             cache_ttl,
             thread_cache_dir,
             thread_cache_ttl: cache_ttl,
+            page_cache_dir,
         })
     }
 
@@ -139,6 +144,90 @@ impl Client {
         parse_forum(&body, forum, page)
     }
 
+    /// Fetch a forum page and enrich every thread with its releases.
+    ///
+    /// The fully enriched page is cached as one unit, so reopening a page is
+    /// instant even when it carries twenty-five threads.
+    pub async fn fetch_page(&self, forum: &'static Forum, page: u32) -> Result<PageLoad> {
+        let now = now_secs();
+        if self.cache_ttl.as_secs() > 0 {
+            let path = self.page_cache_path(forum, page);
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(entry) = serde_json::from_str::<PageCacheEntry>(&text)
+                && entry.version == PAGE_CACHE_VERSION
+                && now.saturating_sub(entry.saved) < self.cache_ttl.as_secs()
+            {
+                let threads: Vec<Thread> = entry
+                    .threads
+                    .into_iter()
+                    .filter_map(StoredThread::into_thread)
+                    .collect();
+                return Ok(PageLoad {
+                    threads,
+                    page,
+                    total_pages: entry.total_pages,
+                    from_cache: true,
+                });
+            }
+        }
+
+        let listing = self.fetch_forum(forum, page).await?;
+        let threads = self.enrich_threads(&listing.threads).await;
+
+        if self.cache_ttl.as_secs() > 0 {
+            let path = self.page_cache_path(forum, page);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let entry = PageCacheEntry {
+                version: PAGE_CACHE_VERSION,
+                saved: now,
+                total_pages: listing.total_pages,
+                threads: threads.iter().map(StoredThread::from_thread).collect(),
+            };
+            if let Ok(json) = serde_json::to_string(&entry) {
+                let _ = std::fs::write(&path, json);
+            }
+        }
+
+        Ok(PageLoad {
+            threads,
+            page,
+            total_pages: listing.total_pages,
+            from_cache: false,
+        })
+    }
+
+    /// Fetch every thread's releases with a bounded number of requests.
+    async fn enrich_threads(&self, threads: &[Thread]) -> Vec<Thread> {
+        let jobs = threads.iter().cloned().enumerate().map(|(index, thread)| {
+            let client = self.clone();
+            async move {
+                client
+                    .fetch_thread(&thread)
+                    .await
+                    .ok()
+                    .map(|updated| (index, updated))
+            }
+        });
+        let results: Vec<Option<(usize, Thread)>> = futures_util::stream::iter(jobs)
+            .buffer_unordered(6)
+            .collect()
+            .await;
+        let mut out = threads.to_vec();
+        for (index, updated) in results.into_iter().flatten() {
+            if let Some(slot) = out.get_mut(index) {
+                *slot = updated;
+            }
+        }
+        out
+    }
+
+    fn page_cache_path(&self, forum: &Forum, page: u32) -> PathBuf {
+        self.page_cache_dir
+            .join(format!("{}-{page}.json", forum.id))
+    }
+
     /// Fetch a thread and its releases, using the parsed-thread cache when fresh.
     pub async fn fetch_thread(&self, thread: &Thread) -> Result<Thread> {
         let now = std::time::SystemTime::now()
@@ -198,8 +287,16 @@ impl Client {
 #[derive(Debug)]
 pub struct ForumPage {
     pub threads: Vec<Thread>,
+    pub total_pages: u32,
+}
+
+/// A fully enriched forum page.
+#[derive(Debug)]
+pub struct PageLoad {
+    pub threads: Vec<Thread>,
     pub page: u32,
     pub total_pages: u32,
+    pub from_cache: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +383,6 @@ pub fn parse_forum(body: &str, forum: &'static Forum, page: u32) -> Result<Forum
     let total_pages = parse_total_pages(body).unwrap_or(page.max(1));
     Ok(ForumPage {
         threads,
-        page,
         total_pages,
     })
 }
@@ -570,7 +666,12 @@ fn decode_entities(input: &str) -> String {
     while let Some(pos) = rest.find('&') {
         out.push_str(&rest[..pos]);
         rest = &rest[pos..];
-        let Some(semi) = rest[..rest.len().min(12)].find(';') else {
+        let Some(semi) = rest
+            .char_indices()
+            .take(12)
+            .find(|(_, c)| *c == ';')
+            .map(|(i, _)| i)
+        else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -756,6 +857,25 @@ mod tests {
 struct HttpCacheEntry {
     saved: u64,
     body: String,
+}
+
+/// Bump when the stored thread shape changes.
+const PAGE_CACHE_VERSION: u32 = 1;
+
+/// A cached, fully enriched forum page.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PageCacheEntry {
+    version: u32,
+    saved: u64,
+    total_pages: u32,
+    threads: Vec<StoredThread>,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Default directory for the on-disk HTTP cache.

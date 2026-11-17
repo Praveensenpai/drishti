@@ -33,6 +33,14 @@ pub struct Config {
     pub auto_update: bool,
     /// Number of movies sent to the model in one request.
     pub ai_batch_size: usize,
+    /// Rough character cap for one model request. Titles are short, but this
+    /// keeps pathological batches far below the model's input limit.
+    pub ai_batch_chars: usize,
+    /// Pause between model batches, in milliseconds, to avoid rate limits.
+    pub ai_batch_pause_ms: u64,
+    /// How long (in hours) a model-resolved original language stays fresh.
+    /// Set 0 to keep answers forever.
+    pub ai_cache_hours: u64,
     /// Optional HTTP endpoint to POST a selected release's magnet link to.
     /// Leave empty to disable (not everyone runs ryoiki). When set, the
     /// selected release's magnet is POSTed as JSON `{"magnet": "..."}`.
@@ -61,6 +69,9 @@ impl Default for Config {
             cache_ttl_minutes: 30,
             auto_update: true,
             ai_batch_size: 24,
+            ai_batch_chars: 6000,
+            ai_batch_pause_ms: 1500,
+            ai_cache_hours: 24,
             magnet_post_url: String::new(),
         }
     }

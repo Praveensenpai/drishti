@@ -11,23 +11,21 @@ mod quality;
 mod site;
 mod ui;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 
-use crate::ai::{CacheEntry, Gemini, LangCache, cache_key, effective_original, heuristic_original};
-use crate::app::{App, Msg, Screen};
+use crate::ai::{CacheEntry, Gemini, LangCache, cache_key, effective_original, plan_batches};
+use crate::app::{App, Msg, ScanProgress, Screen};
 use crate::config::Config;
 use crate::forums::{Forum, all_web_hd};
-use crate::lang::Lang;
-use crate::model::Thread;
+use crate::model::{OriginalLang, Thread};
 use crate::quality::{Quality, analyse, human_size};
+use crate::site::PageLoad;
 
 #[derive(Parser)]
 #[command(
@@ -66,7 +64,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Resolve the original production language of every thread on a forum page.
+    /// Resolve the original production language of the threads on forum pages.
     Resolve {
         /// Forum name or id, for example kannada or 69.
         #[arg(long, default_value = "kannada")]
@@ -128,7 +126,7 @@ async fn main() -> Result<()> {
     }
     match cli.command {
         Some(Command::Probe) => probe(&config).await,
-        Some(Command::Resolve { forum, page }) => resolve(&config, &forum, page).await,
+        Some(Command::Resolve { forum, page }) => resolve(&config, &forum, page, to_page).await,
         Some(Command::ConfigPath) => {
             println!("{}", config_path.display());
             Ok(())
@@ -202,28 +200,12 @@ async fn list(
         site::default_cache_dir(),
         std::time::Duration::from_secs(config.cache_ttl_minutes as u64 * 60),
     )?;
-    let mut result = client.fetch_forum(forum, page).await?;
-
-    if with_releases {
-        let sem = Arc::new(Semaphore::new(6));
-        let mut handles = Vec::new();
-        for thread in result.threads.iter_mut() {
-            let c = client.clone();
-            let s = sem.clone();
-            let t = thread.clone();
-            handles.push(tokio::spawn(async move {
-                let _guard = s.acquire().await.ok()?;
-                c.fetch_thread(&t).await.ok()
-            }));
-        }
-        for handle in handles {
-            if let Ok(Some(updated)) = handle.await
-                && let Some(slot) = result.threads.iter_mut().find(|x| x.url == updated.url)
-            {
-                *slot = updated;
-            }
-        }
-    }
+    let result = client.fetch_page(forum, page).await?;
+    let cache = LangCache::load(&ai::default_cache_path());
+    let ttl = config.ai_cache_hours.saturating_mul(3600);
+    let original_of = |thread: &Thread| {
+        effective_original(thread, &cache, &cache_key(&thread.movie, thread.year), ttl)
+    };
 
     if json {
         let rows: Vec<serde_json::Value> = result
@@ -231,18 +213,23 @@ async fn list(
             .iter()
             .map(|thread| {
                 let info = analyse(&thread.title);
-                let original = thread.original.or_else(|| Some(heuristic_original(thread)));
+                let original = original_of(thread);
                 serde_json::json!({
                     "id": thread.id,
                     "movie": thread.movie,
                     "year": thread.year,
                     "title": thread.title,
                     "forum": thread.forum.title,
+                    "page": result.page,
+                    "total_pages": result.total_pages,
+                    "from_cache": result.from_cache,
                     "quality": info.quality.label(),
                     "source": info.source.label(),
                     "resolution": info.resolution.label(),
-                    "original_language": original.map(|o| o.lang.code()),
-                    "original_source": original.map(|o| o.source.label()),
+                    "original_language": original.lang.code(),
+                    "original_label": original.lang.label(),
+                    "original_source": original.source.label(),
+                    "original_confidence": original.confidence,
                     "url": thread.url,
                     "releases": thread.releases.iter().map(|r| serde_json::json!({
                         "name": r.name,
@@ -263,23 +250,22 @@ async fn list(
     }
 
     println!(
-        "{} — page {}/{}  ({} threads)",
+        "{} — page {}/{}  ({} threads){}",
         forum.title,
         result.page,
         result.total_pages,
-        result.threads.len()
+        result.threads.len(),
+        if result.from_cache { "  [cached]" } else { "" }
     );
     for thread in &result.threads {
         let info = analyse(&thread.title);
-        let original = thread.original.or_else(|| Some(heuristic_original(thread)));
+        let original = original_of(thread);
         let quality = format!("{:<8}", info.quality.label());
         println!(
             "  {:<44} {:<8} {:<12} {}",
             truncate(&thread.title, 44),
             quality,
-            original
-                .map(|o| o.lang.label().to_string())
-                .unwrap_or_else(|| "?".to_string()),
+            original.lang.label(),
             thread.url
         );
         if with_releases {
@@ -313,35 +299,21 @@ fn resolve_forum(name: &str) -> Result<&'static Forum> {
         .context("no forum matched")
 }
 
-/// Resolve the original production language of the threads on a forum page.
-async fn resolve(config: &Config, forum_name: &str, page: u32) -> Result<()> {
+/// Resolve the original production language of the threads on one or more
+/// forum pages. The model is called only for films that are not already in the
+/// one-day cache.
+async fn resolve(
+    config: &Config,
+    forum_name: &str,
+    from_page: u32,
+    to_page: Option<u32>,
+) -> Result<()> {
     let forum = resolve_forum(forum_name)?;
     let client = site::Client::new(
         &config.base_url,
         site::default_cache_dir(),
         std::time::Duration::from_secs(config.cache_ttl_minutes as u64 * 60),
     )?;
-    let result = client.fetch_forum(forum, page).await?;
-    let mut threads = result.threads;
-
-    let sem = Arc::new(Semaphore::new(6));
-    let mut handles = Vec::new();
-    for thread in threads.iter_mut() {
-        let c = client.clone();
-        let s = sem.clone();
-        let t = thread.clone();
-        handles.push(tokio::spawn(async move {
-            let _guard = s.acquire().await.ok();
-            c.fetch_thread(&t).await.ok()
-        }));
-    }
-    for handle in handles {
-        if let Ok(Some(updated)) = handle.await
-            && let Some(slot) = threads.iter_mut().find(|x| x.url == updated.url)
-        {
-            *slot = updated;
-        }
-    }
 
     let key = config.api_key();
     if key.trim().is_empty() {
@@ -349,70 +321,99 @@ async fn resolve(config: &Config, forum_name: &str, page: u32) -> Result<()> {
     }
     let gemini = Gemini::new(&key, config.gemini_models.clone())?;
     let mut cache = LangCache::load(&ai::default_cache_path());
+    let ttl = config.ai_cache_hours.saturating_mul(3600);
+    let batch_size = config.ai_batch_size.max(1);
+    let batch_chars = config.ai_batch_chars.max(64);
+    let pause = config.ai_batch_pause_ms;
 
-    let mut ai_pending: Vec<(usize, String, Option<u16>)> = Vec::new();
-    for (index, thread) in threads.iter().enumerate() {
-        let cache_key_str = cache_key(&thread.movie, thread.year);
-        if cache.get(&cache_key_str).is_none() {
-            let original = heuristic_original(thread);
-            if original.source != crate::model::LangSource::MultiAudio {
-                ai_pending.push((index, cache_key_str, thread.year));
+    let mut page = from_page.max(1);
+    let mut limit = to_page;
+    loop {
+        let load = client.fetch_page(forum, page).await?;
+        let total = load.total_pages.max(page);
+        let last = limit.unwrap_or(total).min(total).max(page);
+        limit = Some(last);
+        let mut threads = load.threads;
+
+        let mut keys: Vec<String> = Vec::new();
+        for thread in &threads {
+            let movie_key = cache_key(&thread.movie, thread.year);
+            if cache.get_with_ttl(&movie_key, ttl).is_none() && !keys.contains(&movie_key) {
+                keys.push(movie_key);
             }
         }
-    }
 
-    println!(
-        "forum {} page {} — {} threads, {} needing model resolution",
-        forum.title,
-        page,
-        threads.len(),
-        ai_pending.len()
-    );
-
-    let size = config.ai_batch_size.max(1);
-    for batch in ai_pending.chunks(size) {
-        let requests: Vec<(String, String)> = batch
-            .iter()
-            .map(|(_, key, year)| {
-                (
-                    key.clone(),
-                    match year {
-                        Some(y) => format!("{key}|{y}"),
-                        None => key.clone(),
-                    },
-                )
-            })
-            .collect();
-        let map = gemini.resolve_batch(&requests).await?;
-        for (cache_key_str, entry) in map {
-            let entry_lang = entry.lang;
-            let entry_confidence = entry.confidence;
-            let entry_source = entry.source;
-            cache.put(cache_key_str.clone(), entry);
-            for thread in &mut threads {
-                if cache_key(&thread.movie, thread.year) == cache_key_str {
-                    thread.original = Some(crate::model::OriginalLang {
-                        lang: entry_lang,
-                        confidence: entry_confidence,
-                        source: entry_source,
-                    });
-                }
-            }
-        }
-        let _ = cache.save(&ai::default_cache_path());
-    }
-
-    for thread in &threads {
-        let key = cache_key(&thread.movie, thread.year);
-        let original = effective_original(thread, &cache, &key);
         println!(
-            "  {:<44} {:<8} confidence {:.2}",
-            truncate(&thread.title, 44),
-            original.lang.label(),
-            original.confidence
+            "{} — page {page}/{total} — {} threads, {} needing model resolution",
+            forum.title,
+            threads.len(),
+            keys.len()
         );
+
+        let batches = plan_batches(&keys, batch_size, batch_chars);
+        let batch_total = batches.len();
+        for (index, batch) in batches.iter().enumerate() {
+            if index > 0 && pause > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
+            }
+            let map = gemini.resolve_batch(batch).await?;
+            for (movie_key, entry) in &map {
+                cache.put(movie_key.clone(), entry.clone());
+            }
+            apply_map(&mut threads, &map);
+            cache.save(&ai::default_cache_path())?;
+            println!(
+                "  resolved batch {}/{} ({} movies)",
+                index + 1,
+                batch_total,
+                batch.len()
+            );
+        }
+
+        for thread in &mut threads {
+            let movie_key = cache_key(&thread.movie, thread.year);
+            let original = match cache.get_with_ttl(&movie_key, ttl) {
+                Some(entry) => OriginalLang {
+                    lang: entry.lang,
+                    confidence: entry.confidence,
+                    source: entry.source,
+                },
+                None => ai::heuristic_original(thread),
+            };
+            thread.original = Some(original);
+        }
+
+        for thread in &threads {
+            let original = thread.original.expect("resolved above");
+            println!(
+                "  {:<44} {:<10} {:<6} confidence {:.2}",
+                truncate(&thread.title, 44),
+                original.lang.label(),
+                original.source.label(),
+                original.confidence
+            );
+        }
+
+        if page >= last {
+            break;
+        }
+        page += 1;
     }
     Ok(())
+}
+
+/// Copy model answers onto a thread list.
+fn apply_map(threads: &mut [Thread], map: &std::collections::HashMap<String, CacheEntry>) {
+    for thread in threads {
+        let key = cache_key(&thread.movie, thread.year);
+        if let Some(entry) = map.get(&key) {
+            thread.original = Some(OriginalLang {
+                lang: entry.lang,
+                confidence: entry.confidence,
+                source: entry.source,
+            });
+        }
+    }
 }
 
 /// Update drishti by downloading the latest prebuilt release binary from
@@ -493,8 +494,8 @@ async fn run_tui(
 ) -> Result<()> {
     let cache_path = ai::default_cache_path();
     let mut app = App::new(config, cache_path)?;
-    app.page = page_from;
-    app.page_from = page_from;
+    app.page = page_from.max(1);
+    app.page_from = page_from.max(1);
     app.page_to = page_to;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
@@ -504,6 +505,8 @@ async fn run_tui(
 
     let mut terminal = ratatui::init();
     let mut events = EventStream::new();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(150));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
@@ -518,6 +521,9 @@ async fn run_tui(
             Some(msg) = rx.recv() => {
                 handle_message(&mut app, msg, &tx).await;
             }
+            _ = ticker.tick() => {
+                app.tick = app.tick.wrapping_add(1);
+            }
         }
 
         if app.should_quit {
@@ -531,56 +537,107 @@ async fn run_tui(
     Ok(())
 }
 
-/// Fetch a forum page in the background and then enrich every thread.
-fn spawn_page_load(app: &App, forum: &'static Forum, page: u32, tx: mpsc::UnboundedSender<Msg>) {
+/// Start a background scan of the selected forum, from the first page to the
+/// last page (or the configured limit). Every page is fully enriched before it
+/// is delivered, so the table never changes its release information after the
+/// fact.
+fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
+    let forum = app.forum();
+    let from = app.page_from.max(1);
+    let to = app.page_to.map(|last| last.max(from));
+    app.page_from = from;
+    app.page_to = to;
+    app.scan_id = app.scan_id.wrapping_add(1);
+    let scan_id = app.scan_id;
+    app.reset_scan();
+    app.page = from;
+    app.show_page(from);
+    app.scan = ScanProgress {
+        active: true,
+        pages_total: to.map(|last| last.saturating_sub(from) + 1).unwrap_or(0),
+        ..ScanProgress::default()
+    };
+    app.status = format!("scanning {}...", forum.title);
+
     let client = app.client.clone();
-    let tx_page = tx.clone();
+    let tx = tx.clone();
     tokio::spawn(async move {
-        match client.fetch_forum(forum, page).await {
-            Ok(result) => {
-                let threads = result.threads;
-                if tx_page
-                    .send(Msg::PageLoaded {
-                        threads: threads.clone(),
-                        page: result.page,
-                        total_pages: result.total_pages,
-                    })
-                    .is_err()
-                {
-                    return;
+        let mut page = from;
+        let mut limit = to;
+        loop {
+            match client.fetch_page(forum, page).await {
+                Ok(load) => {
+                    let total = load.total_pages.max(page);
+                    let last = limit.unwrap_or(total).min(total).max(page);
+                    limit = Some(last);
+                    let _ = tx.send(Msg::PageReady {
+                        forum_id: forum.id,
+                        page,
+                        total_pages: load.total_pages,
+                        threads: load.threads,
+                        from_cache: load.from_cache,
+                        scan_id,
+                    });
+                    if page >= last {
+                        break;
+                    }
                 }
-                let sem = Arc::new(Semaphore::new(6));
-                let mut handles = Vec::new();
-                for (index, thread) in threads.iter().enumerate() {
-                    let c = client.clone();
-                    let s = sem.clone();
-                    let t = tx_page.clone();
-                    let thread = thread.clone();
-                    handles.push(tokio::spawn(async move {
-                        let _guard = s.acquire().await.ok();
-                        match c.fetch_thread(&thread).await {
-                            Ok(updated) => {
-                                let _ = t.send(Msg::ThreadEnriched {
-                                    index,
-                                    thread: updated,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = t.send(Msg::ThreadFailed {
-                                    index,
-                                    error: e.to_string(),
-                                });
-                            }
-                        }
-                    }));
+                Err(error) => {
+                    let _ = tx.send(Msg::PageFailed {
+                        forum_id: forum.id,
+                        page,
+                        error: error.to_string(),
+                        scan_id,
+                    });
+                    match limit {
+                        Some(last) if page < last => {}
+                        _ => break,
+                    }
                 }
-                for handle in handles {
-                    let _ = handle.await;
-                }
-                let _ = tx_page.send(Msg::PageFailed(String::new()));
             }
-            Err(e) => {
-                let _ = tx_page.send(Msg::PageFailed(e.to_string()));
+            page += 1;
+        }
+        let _ = tx.send(Msg::ScanFinished {
+            forum_id: forum.id,
+            scan_id,
+        });
+    });
+}
+
+/// Fetch one page in the background without touching the scan.
+fn request_page(app: &mut App, page: u32, tx: &mpsc::UnboundedSender<Msg>) {
+    if page == 0 || page > app.total_pages.max(1) {
+        return;
+    }
+    if app.pages.contains_key(&page) {
+        app.show_page(page);
+        return;
+    }
+    app.show_page(page);
+    app.pages_in_flight += 1;
+    let client = app.client.clone();
+    let forum = app.forum();
+    let scan_id = app.scan_id;
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        match client.fetch_page(forum, page).await {
+            Ok(load) => {
+                let _ = tx.send(Msg::PageReady {
+                    forum_id: forum.id,
+                    page,
+                    total_pages: load.total_pages,
+                    threads: load.threads,
+                    from_cache: load.from_cache,
+                    scan_id,
+                });
+            }
+            Err(error) => {
+                let _ = tx.send(Msg::PageFailed {
+                    forum_id: forum.id,
+                    page,
+                    error: error.to_string(),
+                    scan_id,
+                });
             }
         }
     });
@@ -589,66 +646,93 @@ fn spawn_page_load(app: &App, forum: &'static Forum, page: u32, tx: mpsc::Unboun
 /// Handle a message from a background task.
 async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>) {
     match msg {
-        Msg::PageLoaded {
-            threads,
+        Msg::PageReady {
+            forum_id,
             page,
             total_pages,
+            threads,
+            from_cache,
+            scan_id,
         } => {
-            app.loading = false;
-            app.page = page;
-            app.total_pages = total_pages;
-            app.threads = threads;
-            app.selected = 0;
-            app.detail_index = None;
-            app.error = None;
-            app.status = format!("{} threads loaded", app.threads.len());
-
-            // Auto-paginate: when a scan is running and a page arrives with more
-            // pages left, load the next one automatically. Manual ←/→ paging
-            // disables `scan_to_end`, so the user stays in control.
-            let limit = app.page_to.unwrap_or(total_pages);
-            if app.scan_to_end {
-                if page < limit {
-                    let forum = app.forum();
-                    spawn_page_load(app, forum, page + 1, tx.clone());
-                } else if app.page_from < limit {
-                    // The scan reached its end. Come back to the page the scan
-                    // started from, so the user lands on real content instead of
-                    // the (often nearly empty) final page.
-                    let forum = app.forum();
-                    let start = app.page_from;
-                    app.scan_to_end = false;
-                    app.page = start;
-                    spawn_page_load(app, forum, start, tx.clone());
+            if scan_id != app.scan_id || forum_id != app.forum().id {
+                return;
+            }
+            app.pages_in_flight = app.pages_in_flight.saturating_sub(1);
+            app.queue_ai_threads(&threads);
+            let count = threads.len() as u32;
+            app.store_page(PageLoad {
+                threads,
+                page,
+                total_pages,
+                from_cache,
+            });
+            if app.scan.active {
+                let last = app
+                    .page_to
+                    .unwrap_or(total_pages)
+                    .min(total_pages)
+                    .max(app.page_from);
+                app.scan.pages_total = last.saturating_sub(app.page_from) + 1;
+                if page >= app.page_from && page <= last && app.scan_done.insert(page) {
+                    app.scan.pages_done += 1;
+                    app.scan.threads_done += count;
+                }
+            } else {
+                dispatch_ai(app, tx);
+            }
+        }
+        Msg::PageFailed {
+            forum_id,
+            page,
+            error,
+            scan_id,
+        } => {
+            if scan_id != app.scan_id || forum_id != app.forum().id {
+                return;
+            }
+            app.pages_in_flight = app.pages_in_flight.saturating_sub(1);
+            if app.scan.active {
+                let last = app.page_to.unwrap_or(page).max(app.page_from);
+                if page >= app.page_from && page <= last && app.scan_done.insert(page) {
+                    app.scan.pages_done += 1;
+                }
+            }
+            if page == app.page {
+                app.loading = false;
+                if !app.pages.contains_key(&page) {
+                    app.error = Some(error);
                 }
             }
         }
-        Msg::PageFailed(error) => {
-            if error.is_empty() {
-                // The enrichment pass finished; ask the model about anything left.
-                dispatch_ai(app, tx);
+        Msg::ScanFinished { forum_id, scan_id } => {
+            if scan_id != app.scan_id || forum_id != app.forum().id {
+                return;
+            }
+            app.scan.active = false;
+            app.loading = !app.pages.contains_key(&app.page) && app.pages_in_flight > 0;
+            if app.pages.contains_key(&app.page) {
                 app.loading = false;
+            }
+            app.status = if app.ai_queue.is_empty() {
+                format!(
+                    "scan complete · {} pages · {} movies cached",
+                    app.scan.pages_done,
+                    app.cache.len()
+                )
             } else {
-                app.loading = false;
-                app.error = Some(error);
-            }
-        }
-        Msg::ThreadEnriched { index, thread } => {
-            if let Some(slot) = app.threads.get_mut(index) {
-                *slot = thread;
-            }
-            queue_ai_candidate(app, index);
-        }
-        Msg::ThreadFailed { index, error } => {
-            app.status = format!("thread {index} could not be read: {error}");
+                format!("scan complete · resolving {} movies", app.ai_queue.len())
+            };
+            dispatch_ai(app, tx);
         }
         Msg::AiResolved(map) => {
             app.ai_in_flight = false;
-            for (key, entry) in map {
-                app.cache.put(key.clone(), entry);
+            let count = map.len();
+            for (key, entry) in &map {
+                app.cache.put(key.clone(), entry.clone());
             }
             let _ = app.cache.save(&app.cache_path);
-            apply_ai_to_threads(app);
+            app.apply_ai(&map);
+            app.status = format!("resolved {count} movies");
             dispatch_ai(app, tx);
         }
         Msg::AiFailed(error) => {
@@ -666,60 +750,33 @@ async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>
     }
 }
 
-/// Decide whether a thread needs the model to resolve its original language.
-fn queue_ai_candidate(app: &mut App, index: usize) {
-    if app.gemini.is_none() {
-        return;
-    }
-    let Some(thread) = app.threads.get(index) else {
-        return;
-    };
-    let key = cache_key(&thread.movie, thread.year);
-    if app.cache.get(&key).is_some() {
-        return;
-    }
-    let original = heuristic_original(thread);
-    // Only ask when the heuristic is not already confident.
-    if original.source == crate::model::LangSource::MultiAudio {
-        return;
-    }
-    if original.confidence >= 0.8 {
-        return;
-    }
-    if app.ai_pending.iter().any(|(i, _, _)| *i == index) {
-        return;
-    }
-    app.ai_pending.push((index, key, thread.year));
-}
-
-/// Send the pending movies to the model in batches.
+/// Send the next queued batch to the model.
 fn dispatch_ai(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
-    if app.gemini.is_none() || app.ai_in_flight || app.ai_pending.is_empty() {
+    if app.scan.active || app.ai_in_flight || app.ai_queue.is_empty() {
         return;
     }
-    let size = app.config.ai_batch_size.max(1);
-    let batch: Vec<_> = app
-        .ai_pending
-        .drain(..size.min(app.ai_pending.len()))
-        .collect();
-    app.ai_in_flight = true;
-
     let Some(gemini) = app.gemini.clone() else {
-        app.ai_in_flight = false;
         return;
     };
+    let batches = plan_batches(
+        &app.ai_queue,
+        app.config.ai_batch_size.max(1),
+        app.config.ai_batch_chars.max(64),
+    );
+    let Some(batch) = batches.into_iter().next() else {
+        return;
+    };
+    app.ai_queue.drain(..batch.len());
+    app.ai_in_flight = true;
+    app.ai_batches_done += 1;
+    let pause = app.config.ai_batch_pause_ms;
+    let wait = app.ai_batches_done > 1;
     let tx = tx.clone();
     tokio::spawn(async move {
-        let mut requests: Vec<(String, String)> = Vec::new();
-        for (index, key, year) in &batch {
-            let display = match year {
-                Some(y) => format!("{key}|{y}"),
-                None => key.clone(),
-            };
-            requests.push((key.clone(), display));
-            let _ = index;
+        if wait && pause > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
         }
-        match gemini.resolve_batch(&requests).await {
+        match gemini.resolve_batch(&batch).await {
             Ok(map) => {
                 let _ = tx.send(Msg::AiResolved(map));
             }
@@ -782,13 +839,9 @@ async fn handle_language_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedS
         }
         KeyCode::Enter => {
             app.screen = Screen::Browser;
-            let forum = app.forum();
-            let page = app.page;
+            let page = app.page.max(1);
             app.page_from = page;
-            app.scan_to_end = true;
-            app.loading = true;
-            app.status = format!("scanning {} from page {page}", forum.title);
-            spawn_page_load(app, forum, page, tx.clone());
+            start_scan(app, tx);
         }
         KeyCode::Esc | KeyCode::Char('q') => app.screen = Screen::Browser,
         KeyCode::Char('?') => app.screen = Screen::Help,
@@ -813,29 +866,20 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
             app.filter.languages.clear();
         }
         KeyCode::Char('s') => {
-            let forum = app.forum();
-            let page = app.page;
-            app.scan_to_end = true;
-            app.loading = true;
             app.status = "rescanning...".to_string();
-            spawn_page_load(app, forum, page, tx.clone());
+            start_scan(app, tx);
         }
         KeyCode::Char('r') => {
-            let forum = app.forum();
             let page = app.page;
-            app.scan_to_end = true;
-            app.loading = true;
-            spawn_page_load(app, forum, page, tx.clone());
+            request_page(app, page, tx);
         }
         KeyCode::Char('[') => {
             if !app.forums.is_empty() {
                 app.forum_index = (app.forum_index + app.forums.len() - 1) % app.forums.len();
                 app.page = 1;
                 app.page_from = 1;
-                app.scan_to_end = true;
-                app.loading = true;
-                let forum = app.forum();
-                spawn_page_load(app, forum, 1, tx.clone());
+                app.page_to = None;
+                start_scan(app, tx);
             }
         }
         KeyCode::Char(']') => {
@@ -843,10 +887,8 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
                 app.forum_index = (app.forum_index + 1) % app.forums.len();
                 app.page = 1;
                 app.page_from = 1;
-                app.scan_to_end = true;
-                app.loading = true;
-                let forum = app.forum();
-                spawn_page_load(app, forum, 1, tx.clone());
+                app.page_to = None;
+                start_scan(app, tx);
             }
         }
         KeyCode::Char('g') => app.select_row(0),
@@ -860,22 +902,14 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
         KeyCode::PageDown => app.select_visible(10),
         KeyCode::Left | KeyCode::Char('h') => {
             if app.page > 1 {
-                app.page -= 1;
-                // Manual paging: stop the auto-scan so we don't jump onward.
-                app.scan_to_end = false;
-                app.loading = true;
-                let forum = app.forum();
-                spawn_page_load(app, forum, app.page, tx.clone());
+                let page = app.page - 1;
+                request_page(app, page, tx);
             }
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            if app.page < app.total_pages {
-                app.page += 1;
-                // Manual paging: stop the auto-scan so we don't jump onward.
-                app.scan_to_end = false;
-                app.loading = true;
-                let forum = app.forum();
-                spawn_page_load(app, forum, app.page, tx.clone());
+            if app.page < app.total_pages.max(1) {
+                let page = app.page + 1;
+                request_page(app, page, tx);
             }
         }
         KeyCode::Char('p') => {
@@ -1058,20 +1092,6 @@ fn selected_release(app: &App) -> Option<&crate::model::Release> {
     thread.releases.get(index)
 }
 
-/// Copy the resolved languages from the cache onto the threads.
-fn apply_ai_to_threads(app: &mut App) {
-    for thread in &mut app.threads {
-        let key = cache_key(&thread.movie, thread.year);
-        if let Some(entry) = app.cache.get(&key) {
-            thread.original = Some(crate::model::OriginalLang {
-                lang: entry.lang,
-                confidence: entry.confidence,
-                source: entry.source,
-            });
-        }
-    }
-}
-
 /// Truncate a string for the text output.
 fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
@@ -1082,7 +1102,3 @@ fn truncate(text: &str, width: usize) -> String {
         out
     }
 }
-
-/// Unused import guard.
-#[allow(dead_code)]
-fn _unused(_: HashMap<String, CacheEntry>, _: Lang, _: &Thread) {}

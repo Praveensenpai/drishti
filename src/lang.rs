@@ -6,8 +6,9 @@
 //! * bracketed multi-audio lists — `[Tamil + Telugu + Malayalam + Kannada]`
 //! * a language word in the title prefix — `Peddi (2026) Kannada TRUE WEB-DL`
 //!
-//! The first language of a bracketed list is, by the uploader's convention, the
-//! language the film was originally made in.
+//! The bracketed list only describes the audio tracks on offer. This board
+//! lists Tamil first even when the film was made in another language, so the
+//! list is never used as an original-language signal.
 
 use std::fmt;
 
@@ -361,11 +362,6 @@ impl LangSet {
         out
     }
 
-    /// True when the release carries more than one audio track.
-    pub fn is_multi_audio(&self) -> bool {
-        self.audio.len() > 1
-    }
-
     /// Compact display, e.g. `Tam+Tel+Mal+Kan`.
     pub fn compact(&self) -> String {
         let langs = self.all();
@@ -531,7 +527,7 @@ mod tests {
             s.audio,
             vec![Lang::Tamil, Lang::Telugu, Lang::Malayalam, Lang::Kannada]
         );
-        assert!(s.is_multi_audio());
+        assert!(s.audio.len() > 1);
         assert!(!s.dubbed);
     }
 

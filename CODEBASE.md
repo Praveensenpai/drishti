@@ -15,7 +15,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
 
 ## 3. Module & Interface Skeleton
 
-### `src/ai.rs` (Role: general, Lines: 396)
+### `src/ai.rs` (Role: general, Lines: 580)
 - **Responsibility**: Core general logic in src/ai.rs
 - **Imports**: use std :: collections :: HashMap , use std :: path :: { Path , PathBuf } , use anyhow :: { Context , Result , bail } , use serde :: { Deserialize , Serialize } , use crate :: lang :: Lang , use crate :: model :: { LangSource , OriginalLang , Thread } 
 - **Types & Enums**:
@@ -26,26 +26,31 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   ```
 - **Public Functions & Signatures**:
   ```rust
+  fn now_secs () -> u64
   fn load (path : & Path) -> LangCache
   fn save (& self , path : & Path) -> Result < () >
-  fn get (& self , key : & str) -> Option < & CacheEntry >
-  fn put (& mut self , key : String , entry : CacheEntry)
+  fn get_with_ttl (& self , key : & str , ttl_secs : u64) -> Option < & CacheEntry >
+  fn put (& mut self , key : String , mut entry : CacheEntry)
+  fn len (& self) -> usize
   fn new (api_key : & str , models : Vec < String >) -> Result < Self >
-  async fn resolve_batch (& self , movies : & [(String , String)] ,) -> Result < HashMap < String , CacheEntry > >
+  async fn resolve_batch (& self , keys : & [String]) -> Result < HashMap < String , CacheEntry > >
   async fn probe (& self) -> Result < Vec < String > >
   fn cache_key (title : & str , year : Option < u16 >) -> String
   fn heuristic_original (thread : & Thread) -> OriginalLang
+  fn plan_batches (keys : & [String] , max_items : usize , max_chars : usize) -> Vec < Vec < String > >
   fn default_cache_path () -> PathBuf
-  fn effective_original (thread : & Thread , cache : & LangCache , key : & str) -> OriginalLang
+  fn effective_original (thread : & Thread , cache : & LangCache , key : & str , ttl_secs : u64 ,) -> OriginalLang
   ```
 
-### `src/app.rs` (Role: general, Lines: 350)
+### `src/app.rs` (Role: general, Lines: 539)
 - **Responsibility**: Core general logic in src/app.rs
-- **Imports**: use std :: collections :: { BTreeSet , HashMap } , use std :: path :: PathBuf , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , heuristic_original } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: lang :: Lang , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: analyse , use crate :: quality :: Quality , use crate :: site :: Client 
+- **Imports**: use std :: collections :: { BTreeSet , HashMap } , use std :: path :: PathBuf , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , heuristic_original , plan_batches } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: lang :: Lang , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: Quality , use crate :: quality :: analyse , use crate :: site :: { Client , PageLoad } 
 - **Types & Enums**:
   ```rust
   pub enum Screen
   pub struct Filter
+  pub struct PageState
+  pub struct ScanProgress
   pub enum Msg
   pub struct App
   ```
@@ -53,8 +58,19 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   ```rust
   fn allows_quality (& self , quality : Quality) -> bool
   fn allows_language (& self , lang : Option < Lang >) -> bool
+  fn ratio (& self) -> f64
   fn new (config : Config , cache_path : PathBuf) -> anyhow :: Result < App >
   fn forum (& self) -> & 'static Forum
+  fn ai_ttl_secs (& self) -> u64
+  fn show_page (& mut self , page : u32)
+  fn store_page (& mut self , load : PageLoad)
+  fn reset_scan (& mut self)
+  fn queue_ai_threads (& mut self , threads : & [Thread])
+  fn apply_ai (& mut self , map : & HashMap < String , CacheEntry >)
+  fn ai_batches_left (& self) -> usize
+  fn ai_batches_total (& self) -> u32
+  fn spinner (& self) -> & 'static str
+  fn progress_text (& self) -> Option < String >
   fn visible_threads (& self) -> Vec < usize >
   fn thread_passes (& self , thread : & Thread) -> bool
   fn effective_original (& self , thread : & Thread) -> Option < OriginalLang >
@@ -66,7 +82,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn selected_row (& self) -> usize
   ```
 
-### `src/config.rs` (Role: general, Lines: 131)
+### `src/config.rs` (Role: general, Lines: 147)
 - **Responsibility**: Core general logic in src/config.rs
 - **Imports**: use std :: path :: { Path , PathBuf } , use anyhow :: { Context , Result } , use serde :: { Deserialize , Serialize } , use crate :: quality :: Quality 
 - **Types & Enums**:
@@ -81,7 +97,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn default_config_path () -> PathBuf
   ```
 
-### `src/forums.rs` (Role: general, Lines: 184)
+### `src/forums.rs` (Role: general, Lines: 424)
 - **Responsibility**: Core general logic in src/forums.rs
 - **Imports**: use crate :: lang :: Lang 
 - **Types & Enums**:
@@ -97,7 +113,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn all_web_hd () -> Vec < & 'static Forum >
   ```
 
-### `src/lang.rs` (Role: general, Lines: 551)
+### `src/lang.rs` (Role: general, Lines: 555)
 - **Responsibility**: Core general logic in src/lang.rs
 - **Imports**: use std :: fmt , use serde :: { Deserialize , Serialize } 
 - **Types & Enums**:
@@ -115,16 +131,15 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn parse_list_group (group : & str) -> Vec < Lang >
   fn scan_text (text : & str) -> Vec < Lang >
   fn all (& self) -> Vec < Lang >
-  fn is_multi_audio (& self) -> bool
   fn compact (& self) -> String
   fn parse_release_langs (name : & str) -> LangSet
   ```
 
-### `src/main.rs` (Role: general, Lines: 1081)
+### `src/main.rs` (Role: general, Lines: 1104)
 - **Responsibility**: Core general logic in src/main.rs
-- **Imports**: use std :: collections :: HashMap , use std :: path :: PathBuf , use std :: sync :: Arc , use anyhow :: { Context , Result } , use clap :: { Parser , Subcommand } , use crossterm :: event :: { Event , EventStream , KeyCode , KeyEvent , KeyEventKind , KeyModifiers } , use futures_util :: StreamExt , use tokio :: sync :: { Semaphore , mpsc } , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , effective_original , heuristic_original } , use crate :: app :: { App , Msg , Screen } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: lang :: Lang , use crate :: model :: Thread , use crate :: quality :: { Quality , analyse , human_size } 
+- **Imports**: use std :: path :: PathBuf , use anyhow :: { Context , Result } , use clap :: { Parser , Subcommand } , use crossterm :: event :: { Event , EventStream , KeyCode , KeyEvent , KeyEventKind , KeyModifiers } , use futures_util :: StreamExt , use tokio :: sync :: mpsc , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , effective_original , plan_batches } , use crate :: app :: { App , Msg , ScanProgress , Screen } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: { Quality , analyse , human_size } , use crate :: site :: PageLoad 
 
-### `src/model.rs` (Role: general, Lines: 135)
+### `src/model.rs` (Role: general, Lines: 225)
 - **Responsibility**: Core general logic in src/model.rs
 - **Imports**: use serde :: { Deserialize , Serialize } , use crate :: forums :: Forum , use crate :: lang :: { Lang , LangSet } , use crate :: quality :: ReleaseInfo 
 - **Types & Enums**:
@@ -133,15 +148,18 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   pub enum LangSource
   pub struct OriginalLang
   pub struct Release
+  pub struct StoredThread
   ```
 - **Public Functions & Signatures**:
   ```rust
   fn label (self) -> & 'static str
   fn has_original (& self , original : Lang) -> bool
+  fn from_thread (thread : & Thread) -> Self
+  fn into_thread (self) -> Option < Thread >
   fn split_title (title : & str) -> (String , Option < u16 > , String)
   ```
 
-### `src/quality.rs` (Role: general, Lines: 406)
+### `src/quality.rs` (Role: general, Lines: 408)
 - **Responsibility**: Core general logic in src/quality.rs
 - **Imports**: use std :: fmt , use serde :: { Deserialize , Serialize } 
 - **Types & Enums**:
@@ -162,13 +180,14 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn human_size (bytes : Option < u64 >) -> String
   ```
 
-### `src/site.rs` (Role: general, Lines: 784)
+### `src/site.rs` (Role: general, Lines: 895)
 - **Responsibility**: Core general logic in src/site.rs
-- **Imports**: use std :: time :: Duration , use anyhow :: { Context , Result , bail } , use regex :: Regex , use scraper :: { ElementRef , Html , Selector } , use std :: path :: PathBuf , use std :: sync :: LazyLock , use crate :: forums :: { Forum } , use crate :: lang :: { LangSet , parse_release_langs } , use crate :: model :: { Release , Thread , split_title } , use crate :: quality :: analyse 
+- **Imports**: use std :: time :: Duration , use anyhow :: { Context , Result , bail } , use futures_util :: StreamExt , use regex :: Regex , use scraper :: { ElementRef , Html , Selector } , use std :: path :: PathBuf , use std :: sync :: LazyLock , use crate :: forums :: Forum , use crate :: lang :: { LangSet , parse_release_langs } , use crate :: model :: { Release , StoredThread , Thread , split_title } , use crate :: quality :: analyse 
 - **Types & Enums**:
   ```rust
   pub struct Client
   pub struct ForumPage
+  pub struct PageLoad
   ```
 - **Public Functions & Signatures**:
   ```rust
@@ -176,6 +195,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   async fn get (& self , url : & str) -> Result < String >
   fn forum_url (& self , forum : & Forum , page : u32) -> String
   async fn fetch_forum (& self , forum : & 'static Forum , page : u32) -> Result < ForumPage >
+  async fn fetch_page (& self , forum : & 'static Forum , page : u32) -> Result < PageLoad >
   async fn fetch_thread (& self , thread : & Thread) -> Result < Thread >
   fn parse_forum (body : & str , forum : & 'static Forum , page : u32) -> Result < ForumPage >
   fn parse_releases (body : & str) -> Result < Vec < Release > >
@@ -183,16 +203,16 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn default_cache_dir () -> PathBuf
   ```
 
-### `src/ui/browser.rs` (Role: tui, Lines: 451)
+### `src/ui/browser.rs` (Role: tui, Lines: 489)
 - **Responsibility**: Core tui logic in src/ui/browser.rs
-- **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span , Text } , use ratatui :: widgets :: { Cell , Paragraph , Row , Table , TableState , Wrap } , use crate :: app :: App , use crate :: lang :: Lang , use crate :: model :: LangSource , use crate :: quality :: { Quality , analyse , human_size } , use crate :: ui :: Theme 
+- **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span , Text } , use ratatui :: widgets :: { Cell , Gauge , Paragraph , Row , Table , TableState , Wrap } , use crate :: app :: App , use crate :: lang :: Lang , use crate :: model :: LangSource , use crate :: quality :: { Quality , analyse , human_size } , use crate :: ui :: Theme 
 - **Public Functions & Signatures**:
   ```rust
   fn draw (frame : & mut ratatui :: Frame , app : & mut App)
   fn draw_language (frame : & mut ratatui :: Frame , app : & mut App)
   ```
 
-### `src/ui/detail.rs` (Role: tui, Lines: 203)
+### `src/ui/detail.rs` (Role: tui, Lines: 213)
 - **Responsibility**: Core tui logic in src/ui/detail.rs
 - **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Cell , Paragraph , Row , Table , TableState } , use crate :: app :: App , use crate :: model :: LangSource , use crate :: quality :: { Quality , human_size } , use crate :: ui :: { Theme , truncate } 
 - **Public Functions & Signatures**:
@@ -200,7 +220,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn draw (frame : & mut ratatui :: Frame , app : & mut App)
   ```
 
-### `src/ui/help.rs` (Role: tui, Lines: 79)
+### `src/ui/help.rs` (Role: tui, Lines: 82)
 - **Responsibility**: Core tui logic in src/ui/help.rs
 - **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout } , use ratatui :: style :: Style , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Paragraph , Wrap } , use crate :: app :: App , use crate :: ui :: Theme 
 - **Public Functions & Signatures**:
@@ -208,7 +228,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn draw (frame : & mut ratatui :: Frame , _app : & mut App)
   ```
 
-### `src/ui/mod.rs` (Role: tui, Lines: 86)
+### `src/ui/mod.rs` (Role: tui, Lines: 88)
 - **Responsibility**: Core tui logic in src/ui/mod.rs
 - **Imports**: use ratatui :: style :: { Color , Modifier , Style } , use ratatui :: widgets :: { Block , BorderType , Borders } , use crate :: app :: { App , Screen } 
 - **Types & Enums**:

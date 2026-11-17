@@ -39,6 +39,8 @@ pub enum LangSource {
     TitleTag,
     /// Assumed to be the forum's language.
     Forum,
+    /// Verified against an external film database.
+    Verified,
     /// Could not be determined.
     Unknown,
 }
@@ -50,6 +52,7 @@ impl LangSource {
             LangSource::MultiAudio => "multi",
             LangSource::TitleTag => "tag",
             LangSource::Forum => "forum",
+            LangSource::Verified => "web",
             LangSource::Unknown => "?",
         }
     }
@@ -80,6 +83,63 @@ impl Release {
     /// True when this release carries the film's original language.
     pub fn has_original(&self, original: Lang) -> bool {
         self.langs.all().contains(&original)
+    }
+}
+
+/// A thread as stored in the enriched page cache. The forum is kept by id so
+/// the cache stays valid across restarts without serialising a static pointer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredThread {
+    pub id: u64,
+    pub title: String,
+    pub movie: String,
+    pub year: Option<u16>,
+    pub url: String,
+    pub forum_id: u32,
+    pub author: String,
+    pub posted: Option<String>,
+    pub replies: u32,
+    pub views: u32,
+    pub releases: Vec<Release>,
+    pub original: Option<OriginalLang>,
+}
+
+impl StoredThread {
+    /// Convert a live thread into its serialisable form.
+    pub fn from_thread(thread: &Thread) -> Self {
+        Self {
+            id: thread.id,
+            title: thread.title.clone(),
+            movie: thread.movie.clone(),
+            year: thread.year,
+            url: thread.url.clone(),
+            forum_id: thread.forum.id,
+            author: thread.author.clone(),
+            posted: thread.posted.clone(),
+            replies: thread.replies,
+            views: thread.views,
+            releases: thread.releases.clone(),
+            original: thread.original,
+        }
+    }
+
+    /// Convert back, dropping threads whose forum no longer exists.
+    pub fn into_thread(self) -> Option<Thread> {
+        let forum = crate::forums::by_id(self.forum_id)?;
+        Some(Thread {
+            id: self.id,
+            title: self.title,
+            movie: self.movie,
+            year: self.year,
+            url: self.url,
+            forum,
+            author: self.author,
+            posted: self.posted,
+            replies: self.replies,
+            views: self.views,
+            releases: self.releases,
+            original: self.original,
+        })
     }
 }
 
@@ -132,5 +192,34 @@ mod tests {
         let (name, year, _) = split_title("Some Movie WEB-DL 1080p");
         assert_eq!(name, "Some Movie WEB-DL 1080p");
         assert_eq!(year, None);
+    }
+
+    #[test]
+    fn stored_thread_round_trips() {
+        let forum = crate::forums::by_id(69).expect("kannada forum");
+        let thread = Thread {
+            id: 7,
+            title: "Test (2026) Kannada WEB-DL".to_string(),
+            movie: "Test".to_string(),
+            year: Some(2026),
+            url: "https://example.invalid/topic/7".to_string(),
+            forum,
+            author: "someone".to_string(),
+            posted: Some("2026-01-01".to_string()),
+            replies: 3,
+            views: 40,
+            releases: Vec::new(),
+            original: Some(OriginalLang {
+                lang: Lang::Kannada,
+                confidence: 0.9,
+                source: LangSource::Ai,
+            }),
+        };
+        let stored = StoredThread::from_thread(&thread);
+        let restored = stored.into_thread().expect("forum still exists");
+        assert_eq!(restored.id, thread.id);
+        assert_eq!(restored.movie, thread.movie);
+        assert_eq!(restored.forum.id, thread.forum.id);
+        assert_eq!(restored.original, thread.original);
     }
 }

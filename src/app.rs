@@ -4,14 +4,14 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use crate::ai::{CacheEntry, Gemini, LangCache, cache_key, heuristic_original};
+use crate::ai::{CacheEntry, Gemini, LangCache, cache_key, heuristic_original, plan_batches};
 use crate::config::Config;
 use crate::forums::{Forum, all_web_hd};
 use crate::lang::Lang;
 use crate::model::{OriginalLang, Thread};
 use crate::quality::Quality;
 use crate::quality::analyse;
-use crate::site::Client;
+use crate::site::{Client, PageLoad};
 
 /// Which pane is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,21 +65,54 @@ impl Filter {
     }
 }
 
+/// One fully loaded forum page.
+#[derive(Clone, Debug)]
+pub struct PageState {
+    pub threads: Vec<Thread>,
+    pub total_pages: u32,
+    pub from_cache: bool,
+}
+
+/// Progress of the background scan.
+#[derive(Clone, Debug, Default)]
+pub struct ScanProgress {
+    pub active: bool,
+    pub pages_done: u32,
+    pub pages_total: u32,
+    pub threads_done: u32,
+}
+
+impl ScanProgress {
+    /// Fraction complete, clamped to 0.0 - 1.0.
+    pub fn ratio(&self) -> f64 {
+        if self.pages_total == 0 {
+            return 0.0;
+        }
+        (self.pages_done as f64 / self.pages_total as f64).clamp(0.0, 1.0)
+    }
+}
+
 /// Messages sent from background tasks to the UI.
 #[derive(Debug)]
 pub enum Msg {
-    /// A forum page arrived.
-    PageLoaded {
-        threads: Vec<Thread>,
+    /// A forum page and all of its releases arrived.
+    PageReady {
+        forum_id: u32,
         page: u32,
         total_pages: u32,
+        threads: Vec<Thread>,
+        from_cache: bool,
+        scan_id: u64,
     },
     /// A forum page failed.
-    PageFailed(String),
-    /// A thread's releases were fetched.
-    ThreadEnriched { index: usize, thread: Thread },
-    /// A thread could not be fetched.
-    ThreadFailed { index: usize, error: String },
+    PageFailed {
+        forum_id: u32,
+        page: u32,
+        error: String,
+        scan_id: u64,
+    },
+    /// Every page of the scan has been delivered.
+    ScanFinished { forum_id: u32, scan_id: u64 },
     /// The model resolved a batch of movies.
     AiResolved(HashMap<String, CacheEntry>),
     /// The model call failed.
@@ -104,15 +137,24 @@ pub struct App {
     pub page_from: u32,
     /// The last page that may be scanned, if the user narrowed it down.
     pub page_to: Option<u32>,
-    /// Whether the current scan should auto-load pages until the last page.
-    /// Turned off when the user pages manually with ←/→.
-    pub scan_to_end: bool,
     pub total_pages: u32,
+    /// The current page's threads.
     pub threads: Vec<Thread>,
+    /// Every page that has arrived during this scan or visit.
+    pub pages: HashMap<u32, PageState>,
+    pub scan: ScanProgress,
+    /// Pages already counted towards scan progress.
+    pub scan_done: BTreeSet<u32>,
+    /// Identifier of the current scan; stale messages are ignored.
+    pub scan_id: u64,
+    /// Manual page requests that are still in flight.
+    pub pages_in_flight: usize,
     pub selected: usize,
     pub loading: bool,
     pub status: String,
     pub error: Option<String>,
+    /// Tick counter used by the spinner.
+    pub tick: u64,
 
     pub filter: Filter,
     pub filter_open: bool,
@@ -123,8 +165,10 @@ pub struct App {
     pub detail_selected: usize,
     pub detail_only_original: bool,
 
-    /// Movies queued for model resolution.
-    pub ai_pending: Vec<(usize, String, Option<u16>)>,
+    /// Movie cache keys waiting for model resolution.
+    pub ai_queue: Vec<String>,
+    /// Batches already sent to the model.
+    pub ai_batches_done: u32,
     pub ai_in_flight: bool,
     /// Set when the user asked to quit.
     pub should_quit: bool,
@@ -168,20 +212,26 @@ impl App {
             page: 1,
             page_from: 1,
             page_to: None,
-            scan_to_end: true,
             total_pages: 1,
             threads: Vec::new(),
+            pages: HashMap::new(),
+            scan: ScanProgress::default(),
+            scan_done: BTreeSet::new(),
+            scan_id: 0,
+            pages_in_flight: 0,
             selected: 0,
             loading: false,
             status: String::new(),
             error: None,
+            tick: 0,
             filter,
             filter_open: false,
             filter_focus: 0,
             detail_index: None,
             detail_selected: 0,
             detail_only_original: false,
-            ai_pending: Vec::new(),
+            ai_queue: Vec::new(),
+            ai_batches_done: 0,
             ai_in_flight: false,
             should_quit: false,
         })
@@ -190,6 +240,129 @@ impl App {
     /// The forum currently being browsed.
     pub fn forum(&self) -> &'static Forum {
         self.forums[self.forum_index.min(self.forums.len() - 1)]
+    }
+
+    /// How long a model answer stays fresh.
+    pub fn ai_ttl_secs(&self) -> u64 {
+        self.config.ai_cache_hours.saturating_mul(3600)
+    }
+
+    /// Show a page from the in-memory store, or show a loading state.
+    pub fn show_page(&mut self, page: u32) {
+        self.page = page;
+        self.detail_index = None;
+        self.selected = 0;
+        if let Some(state) = self.pages.get(&page) {
+            self.threads = state.threads.clone();
+            self.total_pages = state.total_pages;
+            self.loading = false;
+        } else {
+            self.threads.clear();
+            self.loading = true;
+        }
+    }
+
+    /// Store a loaded page and update the view when it is the current page.
+    pub fn store_page(&mut self, load: PageLoad) {
+        let page = load.page;
+        let state = PageState {
+            threads: load.threads,
+            total_pages: load.total_pages,
+            from_cache: load.from_cache,
+        };
+        self.total_pages = state.total_pages;
+        if page == self.page {
+            self.threads = state.threads.clone();
+            self.loading = false;
+            self.error = None;
+            self.status = format!(
+                "{} threads loaded{}",
+                self.threads.len(),
+                if state.from_cache { " (cached)" } else { "" }
+            );
+            self.selected = self.selected.min(self.threads.len().saturating_sub(1));
+        }
+        self.pages.insert(page, state);
+    }
+
+    /// Clear everything before a fresh scan.
+    pub fn reset_scan(&mut self) {
+        self.pages.clear();
+        self.threads.clear();
+        self.selected = 0;
+        self.detail_index = None;
+        self.ai_queue.clear();
+        self.ai_batches_done = 0;
+        self.ai_in_flight = false;
+        self.loading = true;
+        self.error = None;
+        self.pages_in_flight = 0;
+        self.scan_done.clear();
+    }
+
+    /// Whether a thread needs a model answer.
+    fn ai_key(&self, thread: &Thread) -> Option<String> {
+        self.gemini.as_ref()?;
+        let key = cache_key(&thread.movie, thread.year);
+        if self.cache.get_with_ttl(&key, self.ai_ttl_secs()).is_some() {
+            return None;
+        }
+        Some(key)
+    }
+
+    /// Queue every unresolved thread on a loaded page.
+    pub fn queue_ai_threads(&mut self, threads: &[Thread]) {
+        let keys: Vec<String> = threads.iter().filter_map(|t| self.ai_key(t)).collect();
+        for key in keys {
+            if !self.ai_queue.contains(&key) {
+                self.ai_queue.push(key);
+            }
+        }
+    }
+
+    /// Copy resolved answers onto the current page and every cached page.
+    pub fn apply_ai(&mut self, map: &HashMap<String, CacheEntry>) {
+        apply_to_threads(&mut self.threads, map);
+        for state in self.pages.values_mut() {
+            apply_to_threads(&mut state.threads, map);
+        }
+    }
+
+    /// Batches still waiting to be sent.
+    pub fn ai_batches_left(&self) -> usize {
+        plan_batches(
+            &self.ai_queue,
+            self.config.ai_batch_size.max(1),
+            self.config.ai_batch_chars.max(64),
+        )
+        .len()
+    }
+
+    /// Total batches for the current queue, including completed ones.
+    pub fn ai_batches_total(&self) -> u32 {
+        self.ai_batches_done + self.ai_batches_left() as u32
+    }
+
+    /// Spinner frame for progress indicators.
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        FRAMES[(self.tick as usize / 2) % FRAMES.len()]
+    }
+
+    /// A compact progress label for the header.
+    pub fn progress_text(&self) -> Option<String> {
+        if self.scan.active {
+            let done = self.scan.pages_done;
+            let total = self.scan.pages_total.max(done).max(1);
+            let pct = done.saturating_mul(100) / total;
+            return Some(format!("{} scan {done}/{total} {pct}%", self.spinner()));
+        }
+        if self.ai_in_flight || !self.ai_queue.is_empty() {
+            let done = self.ai_batches_done;
+            let total = self.ai_batches_total().max(done).max(1);
+            return Some(format!("{} AI {done}/{total}", self.spinner()));
+        }
+        None
     }
 
     /// The threads that pass the current filter.
@@ -237,16 +410,16 @@ impl App {
 
     /// The original language of a thread, from the model or the heuristic.
     pub fn effective_original(&self, thread: &Thread) -> Option<OriginalLang> {
-        if let Some(original) = thread.original {
-            return Some(original);
-        }
         let key = cache_key(&thread.movie, thread.year);
-        if let Some(entry) = self.cache.get(&key) {
+        if let Some(entry) = self.cache.get_with_ttl(&key, self.ai_ttl_secs()) {
             return Some(OriginalLang {
                 lang: entry.lang,
                 confidence: entry.confidence,
                 source: entry.source,
             });
+        }
+        if let Some(original) = thread.original {
+            return Some(original);
         }
         Some(heuristic_original(thread))
     }
@@ -327,6 +500,20 @@ impl App {
             .iter()
             .position(|i| *i == self.selected)
             .unwrap_or(0)
+    }
+}
+
+/// Copy resolved languages onto a thread list.
+fn apply_to_threads(threads: &mut [Thread], map: &HashMap<String, CacheEntry>) {
+    for thread in threads {
+        let key = cache_key(&thread.movie, thread.year);
+        if let Some(entry) = map.get(&key) {
+            thread.original = Some(OriginalLang {
+                lang: entry.lang,
+                confidence: entry.confidence,
+                source: entry.source,
+            });
+        }
     }
 }
 

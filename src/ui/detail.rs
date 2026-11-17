@@ -49,6 +49,7 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 LangSource::Ai => Style::default().fg(Theme::GOOD),
                 LangSource::MultiAudio => Style::default().fg(Theme::TEXT),
                 LangSource::TitleTag => Style::default().fg(Theme::WARN),
+                LangSource::Verified => Style::default().fg(Theme::GOOD),
                 _ => Theme::muted(),
             };
             let src = match o.source {
@@ -56,6 +57,7 @@ fn draw_header(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 LangSource::MultiAudio => "multi-audio tag",
                 LangSource::TitleTag => "title tag",
                 LangSource::Forum => "forum",
+                LangSource::Verified => "verified",
                 LangSource::Unknown => "unknown",
             };
             (

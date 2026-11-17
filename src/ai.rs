@@ -1,14 +1,11 @@
 //! Original-language resolution.
 //!
-//! Two sources of truth are combined:
+//! Release names only describe the audio tracks on offer. This board always
+//! lists Tamil first, even when the film was made in another language, so the
+//! bracketed audio order is not a valid original-language signal.
 //!
-//! 1. **Heuristic** — a thread that offers a multi-audio release names the
-//!    original language first, so it can be read straight off the release name.
-//! 2. **Gemini** — for a thread that only offers single-language releases we
-//!    cannot tell an original from a dub by reading the title, so the model is
-//!    asked what language the film was made in.
-//!
-//! Answers are cached on disk, keyed by movie name and year.
+//! The heuristic below is a low-confidence placeholder. The model resolves the
+//! real production language once per film and the answer is cached for a day.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,12 +27,23 @@ pub const MODEL_CHAIN: &[&str] = &[
 
 const API_ROOT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
+/// Seconds since the Unix epoch.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// A cached answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub lang: Lang,
     pub confidence: f32,
     pub source: LangSource,
+    /// When the answer was resolved, in seconds since the Unix epoch.
+    #[serde(default)]
+    pub resolved_at: u64,
 }
 
 /// On-disk cache of resolved languages.
@@ -52,10 +60,19 @@ pub struct LangCache {
 impl LangCache {
     /// Load the cache from disk.
     pub fn load(path: &Path) -> LangCache {
-        std::fs::read_to_string(path)
+        let mut cache: LangCache = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Older caches have no timestamp. Treat them as resolved now so they
+        // stay usable for one day instead of being discarded in one go.
+        let now = now_secs();
+        for entry in cache.entries.values_mut() {
+            if entry.resolved_at == 0 {
+                entry.resolved_at = now;
+            }
+        }
+        cache
     }
 
     /// Save the cache to disk.
@@ -68,14 +85,32 @@ impl LangCache {
         Ok(())
     }
 
-    /// Look a movie up.
-    pub fn get(&self, key: &str) -> Option<&CacheEntry> {
-        self.entries.get(key)
+    /// Look a movie up, treating answers older than `ttl_secs` as missing.
+    /// A `ttl_secs` of zero disables expiry.
+    pub fn get_with_ttl(&self, key: &str, ttl_secs: u64) -> Option<&CacheEntry> {
+        let entry = self.entries.get(key)?;
+        // Answers confirmed against an external database never expire.
+        if entry.source == LangSource::Verified {
+            return Some(entry);
+        }
+        if ttl_secs == 0 || now_secs().saturating_sub(entry.resolved_at) < ttl_secs {
+            Some(entry)
+        } else {
+            None
+        }
     }
 
     /// Store a resolved language.
-    pub fn put(&mut self, key: String, entry: CacheEntry) {
+    pub fn put(&mut self, key: String, mut entry: CacheEntry) {
+        if entry.resolved_at == 0 {
+            entry.resolved_at = now_secs();
+        }
         self.entries.insert(key, entry);
+    }
+
+    /// How many answers are stored, fresh or stale.
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -103,38 +138,49 @@ impl Gemini {
 
     /// Resolve the original language of every given movie.
     ///
-    /// `movies` are `(key, display)` pairs. The key is echoed back by the
-    /// model so the answer can be matched to the right movie.
-    pub async fn resolve_batch(
-        &self,
-        movies: &[(String, String)],
-    ) -> Result<HashMap<String, CacheEntry>> {
-        if movies.is_empty() {
+    /// `keys` are `Movie|Year` cache keys. Each key is echoed back by the model
+    /// so the answer can be matched to the right movie.
+    pub async fn resolve_batch(&self, keys: &[String]) -> Result<HashMap<String, CacheEntry>> {
+        if keys.is_empty() {
             return Ok(HashMap::new());
         }
-        let prompt = build_prompt(movies);
-        let body = build_body(&prompt, movies.len());
+        let prompt = build_prompt(keys);
+        let body = build_body(&prompt, keys.len());
 
-        let mut last_error: Option<anyhow::Error> = None;
-        for model in &self.models {
-            match self.call(model, &body).await {
-                Ok(text) => {
-                    let parsed = parse_reply(&text);
-                    if parsed.is_empty() {
-                        last_error = Some(anyhow::anyhow!("{model} returned no usable rows"));
-                        continue;
+        let mut attempt = 0u32;
+        let outcome: Result<HashMap<String, CacheEntry>> = loop {
+            let mut attempt_error: Option<anyhow::Error> = None;
+            let mut settled = false;
+            let mut index = 0usize;
+            while index < self.models.len() {
+                let model = self.models[index].clone();
+                index += 1;
+                let result = self.call(&model, &body).await;
+                match result {
+                    Ok(text) => {
+                        let parsed = parse_reply(&text);
+                        if !parsed.is_empty() {
+                            return Ok(parsed);
+                        }
+                        attempt_error = Some(anyhow::anyhow!("{model} returned no usable rows"));
+                        settled = true;
+                        break;
                     }
-                    return Ok(parsed);
-                }
-                Err(e) => {
-                    last_error = Some(e.context(format!("model {model}")));
+                    Err(e) => {
+                        attempt_error = Some(e.context(format!("model {model}")));
+                    }
                 }
             }
-        }
-        match last_error {
-            Some(e) => Err(e),
-            None => bail!("no models configured"),
-        }
+            if !settled || attempt_error.is_none() || attempt >= 2 {
+                break Err(attempt_error.unwrap_or_else(|| anyhow::anyhow!("no models configured")));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(
+                2000 * (attempt as u64 + 1),
+            ))
+            .await;
+            attempt += 1;
+        };
+        outcome
     }
 
     /// Call one model and return the raw text of the first candidate.
@@ -200,33 +246,36 @@ impl Gemini {
 }
 
 fn truncate(text: &str, max: usize) -> String {
-    if text.len() <= max {
+    if text.chars().count() <= max {
         text.to_string()
     } else {
-        format!("{}...", &text[..max])
+        text.chars().take(max).collect()
     }
 }
 
 /// Build the prompt asking for the original production language.
-fn build_prompt(movies: &[(String, String)]) -> String {
+fn build_prompt(keys: &[String]) -> String {
     let mut prompt = String::new();
     prompt.push_str(
         "You are a film database assistant. For each movie listed, reply with the \
          ORIGINAL PRODUCTION LANGUAGE of the film.\n\n\
          Rules:\n\
+         - The key is \"Movie Title|Year\"; the year disambiguates the film.\n\
          - The original language is the language the film was first shot in, not any dub, \
            dubbing language or subtitle language.\n\
+         - Do not infer the language from the forum or from the audio tracks offered.\n\
          - For Indian films shot simultaneously in two languages, answer the dominant one.\n\
          - For Hollywood and other English-language films answer \"eng\".\n\
          - For Japanese films answer \"jpn\", for Korean films \"kor\".\n\
-         - Answer using a two letter ISO 639-1 code (tam, tel, hin, mal, kan, eng, ...).\n\
+         - Answer with a three letter ISO 639-2/639-3 code \
+           (tam, tel, hin, mal, kan, eng, ...).\n\
          - Never answer with a language the film was only dubbed into.\n\
          - If you do not know the film, give your single best guess anyway.\n\
          - Copy the \"key\" field back exactly as given, unchanged.\n\n\
          MOVIES:\n",
     );
-    for (key, display) in movies {
-        prompt.push_str(&format!("- key: {key}  movie: {display}\n"));
+    for key in keys {
+        prompt.push_str(&format!("- key: {key}\n"));
     }
     prompt
 }
@@ -273,7 +322,12 @@ fn parse_reply(text: &str) -> HashMap<String, CacheEntry> {
         let Some(code) = row.get("language").and_then(|v| v.as_str()) else {
             continue;
         };
-        let lang = Lang::from_code(code);
+        let parsed = Lang::from_code(code);
+        let lang = if parsed == Lang::Other {
+            crate::lang::lang_from_token(code).unwrap_or(Lang::Other)
+        } else {
+            parsed
+        };
         if lang == Lang::Other {
             continue;
         }
@@ -295,6 +349,7 @@ fn parse_reply(text: &str) -> HashMap<String, CacheEntry> {
                 lang,
                 confidence,
                 source: LangSource::Ai,
+                resolved_at: now_secs(),
             },
         );
     }
@@ -311,44 +366,65 @@ pub fn cache_key(title: &str, year: Option<u16>) -> String {
 
 /// Resolve a thread's original language without asking the model.
 ///
-/// A thread that offers a multi-audio release names the original language
-/// first, so the answer can be read off the release name. A single-language
-/// release in a language forum is assumed to be in that forum's language.
+/// The position of a language in a release name says nothing about the
+/// production language: this board lists Tamil first even for films made in
+/// another language. A title tag is therefore only a weak hint, and a
+/// language forum contributes an even weaker one. The model resolves the
+/// real answer and caches it for a day.
 pub fn heuristic_original(thread: &Thread) -> OriginalLang {
-    for release in &thread.releases {
-        if release.langs.is_multi_audio() {
-            return OriginalLang {
-                lang: release.langs.audio[0],
-                confidence: 0.8,
-                source: LangSource::MultiAudio,
-            };
-        }
-    }
-    if !thread.releases.is_empty() {
-        let all_dubbed = thread
+    if !thread.releases.is_empty()
+        && thread
             .releases
             .iter()
-            .all(|r| r.langs.dubbed || r.langs.subtitled);
-        if all_dubbed {
-            return OriginalLang {
-                lang: thread.forum.lang,
-                confidence: 0.0,
-                source: LangSource::Unknown,
-            };
-        }
-        if let Some(lang) = thread.releases[0].langs.text.first() {
-            return OriginalLang {
-                lang: *lang,
-                confidence: 0.45,
-                source: LangSource::TitleTag,
-            };
-        }
+            .all(|r| r.langs.dubbed || r.langs.subtitled)
+    {
+        return OriginalLang {
+            lang: Lang::Other,
+            confidence: 0.0,
+            source: LangSource::Unknown,
+        };
+    }
+    if let Some(lang) = thread
+        .releases
+        .iter()
+        .find_map(|r| r.langs.text.first().copied())
+    {
+        return OriginalLang {
+            lang,
+            confidence: 0.35,
+            source: LangSource::TitleTag,
+        };
     }
     OriginalLang {
         lang: thread.forum.lang,
         confidence: 0.25,
         source: LangSource::Forum,
     }
+}
+
+/// Split cache keys into batches that respect both an item and a character cap.
+///
+/// The character cap keeps each Gemini request well below the model's input
+/// limit even when film titles are unusually long.
+pub fn plan_batches(keys: &[String], max_items: usize, max_chars: usize) -> Vec<Vec<String>> {
+    let max_items = max_items.max(1);
+    let max_chars = max_chars.max(64);
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut chars = 0usize;
+    for key in keys {
+        let cost = key.len() + 8;
+        if !current.is_empty() && (current.len() >= max_items || chars + cost > max_chars) {
+            batches.push(std::mem::take(&mut current));
+            chars = 0;
+        }
+        current.push(key.clone());
+        chars += cost;
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
 }
 
 /// The default cache location.
@@ -358,16 +434,21 @@ pub fn default_cache_path() -> PathBuf {
 }
 
 /// The original language of a thread, from the model, the cache or the heuristic.
-pub fn effective_original(thread: &Thread, cache: &LangCache, key: &str) -> OriginalLang {
-    if let Some(original) = thread.original {
-        return original;
-    }
-    if let Some(entry) = cache.get(key) {
+pub fn effective_original(
+    thread: &Thread,
+    cache: &LangCache,
+    key: &str,
+    ttl_secs: u64,
+) -> OriginalLang {
+    if let Some(entry) = cache.get_with_ttl(key, ttl_secs) {
         return OriginalLang {
             lang: entry.lang,
             confidence: entry.confidence,
             source: entry.source,
         };
+    }
+    if let Some(original) = thread.original {
+        return original;
     }
     heuristic_original(thread)
 }
@@ -375,14 +456,51 @@ pub fn effective_original(thread: &Thread, cache: &LangCache, key: &str) -> Orig
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::LangSet;
+    use crate::model::Release;
+    use crate::quality::ReleaseInfo;
+
+    fn release(audio: &[Lang], text: &[Lang]) -> Release {
+        Release {
+            name: String::new(),
+            info: ReleaseInfo::default(),
+            langs: LangSet {
+                audio: audio.to_vec(),
+                text: text.to_vec(),
+                dubbed: false,
+                subtitled: false,
+            },
+            magnet: None,
+            direct: None,
+            torrent: None,
+        }
+    }
+
+    fn thread_with(releases: Vec<Release>) -> Thread {
+        Thread {
+            id: 1,
+            title: "Test (2026)".to_string(),
+            movie: "Test".to_string(),
+            year: Some(2026),
+            url: String::new(),
+            forum: crate::forums::by_id(69).expect("kannada forum"),
+            author: String::new(),
+            posted: None,
+            replies: 0,
+            views: 0,
+            releases,
+            original: None,
+        }
+    }
 
     #[test]
     fn parses_a_reply() {
-        let reply = r#"[{"key":"Leo|2023","language":"ta","confidence":"high"}]"#;
+        let reply = r#"[{"key":"Leo|2023","language":"tam","confidence":"high"}]"#;
         let parsed = parse_reply(reply);
         let entry = parsed.get("Leo|2023").expect("entry");
         assert_eq!(entry.lang, Lang::Tamil);
         assert_eq!(entry.confidence, 0.9);
+        assert!(entry.resolved_at > 0);
     }
 
     #[test]
@@ -395,5 +513,68 @@ mod tests {
     fn cache_key_includes_year() {
         assert_eq!(cache_key("Leo", Some(2023)), "Leo|2023");
         assert_eq!(cache_key("Leo", None), "Leo");
+    }
+
+    #[test]
+    fn multi_audio_order_is_not_the_original_language() {
+        // Tamil first, like the board, but the title tag names Kannada.
+        let thread = thread_with(vec![release(
+            &[Lang::Tamil, Lang::Telugu, Lang::Kannada],
+            &[Lang::Kannada],
+        )]);
+        let original = heuristic_original(&thread);
+        assert_eq!(original.lang, Lang::Kannada);
+        assert_eq!(original.source, LangSource::TitleTag);
+        assert!(original.confidence < 0.5);
+    }
+
+    #[test]
+    fn all_dubbed_is_unknown() {
+        let mut release = release(&[Lang::Tamil, Lang::Telugu], &[]);
+        release.langs.dubbed = true;
+        let thread = thread_with(vec![release]);
+        let original = heuristic_original(&thread);
+        assert_eq!(original.source, LangSource::Unknown);
+        assert_eq!(original.confidence, 0.0);
+    }
+
+    #[test]
+    fn cache_entries_expire_after_a_day() {
+        let mut cache = LangCache::default();
+        let stale = now_secs().saturating_sub(25 * 60 * 60);
+        let fresh = now_secs().saturating_sub(23 * 60 * 60);
+        cache.put(
+            "old|2020".to_string(),
+            CacheEntry {
+                lang: Lang::Kannada,
+                confidence: 0.9,
+                source: LangSource::Ai,
+                resolved_at: stale,
+            },
+        );
+        cache.put(
+            "new|2020".to_string(),
+            CacheEntry {
+                lang: Lang::Telugu,
+                confidence: 0.9,
+                source: LangSource::Ai,
+                resolved_at: fresh,
+            },
+        );
+        assert!(cache.get_with_ttl("old|2020", 86_400).is_none());
+        assert!(cache.get_with_ttl("new|2020", 86_400).is_some());
+    }
+
+    #[test]
+    fn batches_respect_item_and_character_caps() {
+        let keys: Vec<String> = (0..50).map(|i| format!("Movie {i}|2026")).collect();
+        let batches = plan_batches(&keys, 10, 200);
+        let total: usize = batches.iter().map(Vec::len).sum();
+        assert_eq!(total, keys.len());
+        for batch in &batches {
+            assert!(batch.len() <= 10);
+            let chars: usize = batch.iter().map(|k| k.len() + 8).sum();
+            assert!(chars <= 200 || batch.len() == 1);
+        }
     }
 }
