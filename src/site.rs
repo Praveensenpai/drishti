@@ -19,7 +19,7 @@ use crate::model::{Release, StoredThread, Thread, split_title};
 use crate::quality::analyse;
 
 /// Default board address.
-pub const DEFAULT_BASE_URL: &str = "https://www.1tamilmv.io";
+pub const DEFAULT_BASE_URL: &str = "https://www.1tamilmv.ceo";
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                           (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -745,14 +745,11 @@ fn percent_decode(input: &str) -> String {
 /// Strip the site branding and file extension from a release name.
 pub fn clean_release_name(raw: &str) -> String {
     let mut name = raw.trim().to_string();
-    for prefix in [
-        "www.1TamilMV.report - ",
-        "www.1TamilMV.report -",
-        "www.1tamilmv.report - ",
-    ] {
-        if let Some(rest) = name.strip_prefix(prefix) {
-            name = rest.trim().to_string();
-        }
+    static BRAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)^www\.1tamilmv\.[a-z]+(?:\s*-\s*)?").expect("brand regex")
+    });
+    if let Some(m) = BRAND_RE.find(&name) {
+        name = name[m.end()..].trim().to_string();
     }
     for suffix in [
         ".mkv.torrent",

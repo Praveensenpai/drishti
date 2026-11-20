@@ -4,7 +4,7 @@
 
 ### *ದೃಷ್ಟಿ — "sight"*
 
-**A beautiful terminal browser for [1TamilMV](https://www.1tamilmv.io) — digital HD rips only (WEB‑DL / HDRip / WEBRip), no DVDRip, CAM or theater prints — and only the original language.**
+**A beautiful terminal browser for [1TamilMV](https://www.1tamilmv.ceo) — digital HD rips only (WEB‑DL / HDRip / WEBRip), no DVDRip, CAM or theater prints — and only the original language.**
 
 [![Latest Release](https://img.shields.io/github/v/release/Praveensenpai/drushti?style=for-the-badge&color=cba6f7)](https://github.com/Praveensenpai/drushti/releases)
 [![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Praveensenpai/drushti)
