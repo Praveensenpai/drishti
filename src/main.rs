@@ -900,7 +900,10 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
         KeyCode::Char('/') => {
             app.search_open = true;
             app.saved_query = app.search_draft.clone();
-            app.set_query(String::new());
+            app.search_draft.clear();
+            app.search_results.clear();
+            app.result_selected = 0;
+            app.search_dirty = false;
         }
         KeyCode::Char('f') => {
             app.filter_open = true;
@@ -1057,6 +1060,10 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
             if !app.search_draft.is_empty() {
                 app.search_draft.pop();
                 app.set_query(app.search_draft.clone());
+                app.rebuild_search_results();
+            } else {
+                app.search_results.clear();
+                app.result_selected = 0;
             }
         }
         KeyCode::Char(c) => {
@@ -1065,6 +1072,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
             if c.is_ascii() && !c.is_ascii_whitespace() {
                 app.search_draft.push(c);
                 app.set_query(app.search_draft.clone());
+                app.rebuild_search_results();
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {

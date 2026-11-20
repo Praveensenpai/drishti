@@ -25,12 +25,12 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         .split(area);
 
     draw_header(frame, app, rows[0]);
-    draw_filter_bar(frame, app, rows[1]);
 
-    // When search overlay is active, show search results instead of thread list.
-    if app.search_open && !app.search_results.is_empty() {
-        draw_search_results(frame, app, rows[2]);
+    if app.search_open {
+        draw_search_bar(frame, app, rows[1]);
+        draw_search_view(frame, app, rows[2]);
     } else {
+        draw_filter_bar(frame, app, rows[1]);
         draw_table(frame, app, rows[2]);
     }
 
@@ -511,33 +511,86 @@ pub fn draw_language(frame: &mut ratatui::Frame, app: &mut App) {
     );
 }
 
-/// Draw the search results list in the browser area.
-/// This does NOT draw the search prompt line — that is handled by ui::draw()
-/// on top of the browser.  This only draws the result items below.
-fn draw_search_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    // Draw the search result items below the default browser layout.
-    // We use the bottom portion of the browser area for results.
-    let result_area = ratatui::layout::Rect {
-        x: area.x + 1,
-        y: area.y + 3,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(6),
+/// Search input bar shown in place of the filter bar.
+fn draw_search_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let text = format!(" / {}_", app.search_draft);
+    let info = if app.search_draft.is_empty() {
+        "start typing to search  •  esc close".to_string()
+    } else {
+        format!(
+            "{} results  •  ↑↓ navigate  •  enter jump  •  esc close",
+            app.search_results.len()
+        )
     };
-    let items: Vec<Line> = app
+
+    let line = Line::from(vec![
+        Span::styled(
+            text,
+            Style::default()
+                .fg(Theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(info, Theme::muted()),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Search results list shown in place of the thread table.
+fn draw_search_view(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    if app.search_draft.is_empty() {
+        let msg = Paragraph::new(Line::from(Span::styled(
+            "Type to fuzzy-search loaded movies (e.g. pddi, jlr2, peddi)",
+            Theme::muted(),
+        )))
+        .block(Theme::block("search"));
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    if app.search_results.is_empty() {
+        let msg = Paragraph::new(Line::from(Span::styled(
+            format!("No matches for \"{}\"", app.search_draft),
+            Style::default().fg(Theme::WARN),
+        )))
+        .block(Theme::block("search"));
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let header = Row::new(vec![Cell::from("#"), Cell::from("Movie")]).style(
+        Style::default()
+            .fg(Theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows: Vec<Row> = app
         .search_results
         .iter()
         .enumerate()
-        .map(|(i, r)| {
-            let mark = if i == app.result_selected { "[>]" } else { "[ ]" };
-            Line::from(Span::styled(
-                format!("{mark} {}", r.text),
-                Style::default().fg(Theme::TEXT),
-            ))
+        .map(|(i, result)| {
+            let style = if i == app.result_selected {
+                Style::default()
+                    .fg(Theme::ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Theme::TEXT)
+            };
+            Row::new(vec![
+                Cell::from(format!("{}", i + 1)),
+                Cell::from(result.text.clone()),
+            ])
+            .style(style)
         })
-        .take(7)
         .collect();
-    frame.render_widget(
-        Paragraph::new(Text::from(items)).block(Theme::block("results")),
-        result_area,
-    );
+
+    let widths = [Constraint::Length(4), Constraint::Min(20)];
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(Theme::block("search results"))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    let mut state = TableState::default();
+    state.select(Some(app.result_selected.min(app.search_results.len().saturating_sub(1))));
+    frame.render_stateful_widget(table, area, &mut state);
 }
