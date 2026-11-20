@@ -26,7 +26,14 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
     draw_header(frame, app, rows[0]);
     draw_filter_bar(frame, app, rows[1]);
-    draw_table(frame, app, rows[2]);
+
+    // When search overlay is active, show search results instead of thread list.
+    if app.search_open && !app.search_results.is_empty() {
+        draw_search_results(frame, app, rows[2]);
+    } else {
+        draw_table(frame, app, rows[2]);
+    }
+
     draw_footer(frame, app, rows[3]);
 
     if app.filter_open {
@@ -501,5 +508,36 @@ pub fn draw_language(frame: &mut ratatui::Frame, app: &mut App) {
             Theme::muted(),
         ))),
         rows[2],
+    );
+}
+
+/// Draw the search results list in the browser area.
+/// This does NOT draw the search prompt line — that is handled by ui::draw()
+/// on top of the browser.  This only draws the result items below.
+fn draw_search_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    // Draw the search result items below the default browser layout.
+    // We use the bottom portion of the browser area for results.
+    let result_area = ratatui::layout::Rect {
+        x: area.x + 1,
+        y: area.y + 3,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(6),
+    };
+    let items: Vec<Line> = app
+        .search_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let mark = if i == app.result_selected { "[>]" } else { "[ ]" };
+            Line::from(Span::styled(
+                format!("{mark} {}", r.text),
+                Style::default().fg(Theme::TEXT),
+            ))
+        })
+        .take(7)
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(items)).block(Theme::block("results")),
+        result_area,
     );
 }

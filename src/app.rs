@@ -547,18 +547,20 @@ impl App {
             }
         }
 
-        // Sort by score descending (nucleo returns higher = better).
+        // Sort by score descending (higher score = better/more specific match).
         scored.sort_by_key(|a| std::cmp::Reverse(a.0.score));
 
-        // Dedup by cache key, keeping the first (highest score) entry.
-        let mut seen = std::collections::HashSet::new();
+        // Collect results sorted by score.  The previous dedup-by-cache-key
+        // logic capped the result count at the number of unique keys in the
+        // dataset (e.g. always 6 results regardless of query), which broke
+        // the search feature.  We keep results in score order and trust the
+        // 200-line cap below to keep the UI responsive.  Result count is now
+        // query-dependent rather than dataset-size-dependent.
         for (m, key, _) in &scored {
-            if seen.insert(key) {
-                self.search_results.push(m.clone());
-            }
+            self.search_results.push(m.clone());
         }
 
-        // Cap at 200 results to keep UI responsive.
+        // Cap at 200 results to keep the UI responsive.
         self.search_results.truncate(200);
     }
 
