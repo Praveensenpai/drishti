@@ -1047,13 +1047,18 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
             // Keep search open, allow nesting (unlikely but harmless).
         }
         KeyCode::Enter => {
-            // Commit the search and jump to the first result.
+            // Commit the search and jump to the selected result.
             app.rebuild_search_results();
             if !app.search_results.is_empty() {
-                app.jump_to_result(0);
+                let idx = app
+                    .result_selected
+                    .min(app.search_results.len().saturating_sub(1));
+                app.jump_to_result(idx);
             } else {
                 app.search_open = false;
-                app.search_draft = app.saved_query.clone();
+                app.search_draft.clear();
+                app.search_results.clear();
+                app.result_selected = 0;
             }
         }
         KeyCode::Backspace => {

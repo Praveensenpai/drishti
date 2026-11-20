@@ -15,6 +15,10 @@ pub struct MatchResult {
     pub text: String,
     /// Byte offsets in `text` of each matched character, for highlighting.
     pub indices: Vec<u32>,
+    /// Page the matched thread belongs to.
+    pub page_id: u32,
+    /// Index of the matched thread within that page.
+    pub thread_index: usize,
 }
 
 impl MatchResult {
@@ -29,38 +33,88 @@ impl MatchResult {
 ///
 /// Case‑insensitive subsequence matching: every character of the query
 /// must appear in order in the target, but other characters can be interspersed.
-/// Returns `None` when the query cannot be found as a subsequence.
+/// Scores consecutive matches, early matches, and word-boundary matches higher.
 pub fn fuzzy_match(query: &str, text: &str) -> Option<MatchResult> {
-    let query = query.to_ascii_lowercase();
-    let text_lo = text.to_ascii_lowercase();
+    let q_chars: Vec<char> = query.to_lowercase().chars().collect();
+    if q_chars.is_empty() {
+        return None;
+    }
 
-    let mut indices = Vec::new();
+    let t_chars: Vec<char> = text.chars().collect();
+    let t_lower: Vec<char> = text.to_lowercase().chars().collect();
+
+    let mut char_byte_offsets: Vec<u32> = Vec::with_capacity(t_chars.len());
+    let mut byte_pos = 0u32;
+    for c in &t_chars {
+        char_byte_offsets.push(byte_pos);
+        byte_pos += c.len_utf8() as u32;
+    }
+
+    let mut indices = Vec::with_capacity(q_chars.len());
     let mut q_pos = 0usize;
+    let mut score: i64 = 0;
+    let mut prev_match: Option<usize> = None;
+    let mut first_match: Option<usize> = None;
 
-    for (i, c) in text_lo.char_indices() {
-        if q_pos < query.len() && c == query.as_bytes()[q_pos] as char {
-            // Map back to byte offset in the original (non-lowercased) text.
-            // We'll just use the character position as a u32 index.
-            let byte_end = text[..i + c.len_utf8()].len();
-            // Push the starting byte index of this matched char.
-            indices.push(byte_end as u32);
+    for (i, &tc) in t_lower.iter().enumerate() {
+        if q_pos < q_chars.len() && tc == q_chars[q_pos] {
+            indices.push(char_byte_offsets[i]);
+
+            if first_match.is_none() {
+                first_match = Some(i);
+            }
+
+            // Base score per matched char.
+            score += 10;
+
+            // Strong bonus for consecutive matches.
+            if let Some(prev) = prev_match {
+                if i == prev + 1 {
+                    score += 20;
+                } else {
+                    // Small gap penalty.
+                    let gap = (i - prev - 1) as i64;
+                    score -= gap.min(10);
+                }
+            }
+
+            // Bonus for match at start or word boundary.
+            if i == 0 {
+                score += 15;
+            } else {
+                let prev_c = t_chars[i - 1];
+                if prev_c.is_whitespace()
+                    || prev_c == '-'
+                    || prev_c == '_'
+                    || prev_c == '.'
+                    || prev_c == '('
+                    || prev_c == '['
+                {
+                    score += 10;
+                }
+            }
+
+            prev_match = Some(i);
             q_pos += 1;
         }
     }
 
-    if q_pos < query.len() {
-        // Not all query characters were found.
+    if q_pos < q_chars.len() {
         return None;
     }
 
-    // Score is the number of matched characters (which equals query.len()).
-    // We add a small bonus for extra consecutive matches.
-    let score = query.len() as i64;
+    // Prefer earlier first match and shorter overall text.
+    if let Some(first) = first_match {
+        score -= first as i64;
+    }
+    score -= (t_chars.len() as i64) / 20;
 
     Some(MatchResult {
         score,
         text: text.to_string(),
         indices,
+        page_id: 0,
+        thread_index: 0,
     })
 }
 

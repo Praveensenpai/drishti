@@ -535,29 +535,27 @@ impl App {
             return;
         }
 
-        let mut scored: Vec<(MatchResult, String, u64)> = Vec::new(); // (result, cache_key, page_id)
+        let mut scored: Vec<MatchResult> = Vec::new();
 
-        // Iterate all pages.
+        // Iterate all loaded pages.
         for (&page_id, state) in &self.pages {
-            for thread in &state.threads {
-                if let Some(m) = match_thread(query, &thread.movie, &thread.title) {
-                    let key = cache_key(&thread.movie, thread.year);
-                    scored.push((m.clone(), key, page_id as u64));
+            for (thread_index, thread) in state.threads.iter().enumerate() {
+                if let Some(mut m) = match_thread(query, &thread.movie, &thread.title) {
+                    m.page_id = page_id;
+                    m.thread_index = thread_index;
+                    scored.push(m);
                 }
             }
         }
 
         // Sort by score descending (higher score = better/more specific match).
-        scored.sort_by_key(|a| std::cmp::Reverse(a.0.score));
+        scored.sort_by_key(|m| std::cmp::Reverse(m.score));
 
-        // Collect results sorted by score.  The previous dedup-by-cache-key
-        // logic capped the result count at the number of unique keys in the
-        // dataset (e.g. always 6 results regardless of query), which broke
-        // the search feature.  We keep results in score order and trust the
-        // 200-line cap below to keep the UI responsive.  Result count is now
-        // query-dependent rather than dataset-size-dependent.
-        for (m, key, _) in &scored {
-            self.search_results.push(m.clone());
+        self.search_results = scored;
+        if self.search_results.is_empty() {
+            self.result_selected = 0;
+        } else if self.result_selected >= self.search_results.len() {
+            self.result_selected = self.search_results.len() - 1;
         }
 
         // Cap at 200 results to keep the UI responsive.
@@ -566,17 +564,28 @@ impl App {
 
     /// Jump to the search result at the given index.
     ///
-    /// Sets the app page, shows that page, and moves selection to the matching
-    /// thread. Closes the search overlay.
+    /// Shows the result's page, selects the matching thread, closes search,
+    /// and opens the detail view so the user can interact with the post.
     pub fn jump_to_result(&mut self, idx: usize) {
-        if idx >= self.search_results.len() {
+        let Some(result) = self.search_results.get(idx).cloned() else {
             return;
+        };
+        self.show_page(result.page_id);
+        if result.thread_index < self.threads.len() {
+            self.selected = result.thread_index;
+        } else {
+            self.selected = 0;
         }
-        // We'll find the page below; for now just show page 1 and select first.
-        self.show_page(1);
-        self.selected = 0;
         self.search_open = false;
-        self.search_draft = String::new();
+        self.search_draft.clear();
+        self.search_results.clear();
+        self.result_selected = 0;
+        self.search_dirty = false;
+        // Open detail view for the selected thread.
+        self.detail_index = Some(self.selected);
+        self.detail_selected = 0;
+        self.screen = Screen::Detail;
+        self.detail_only_original = false;
     }
 
     /// The visible row the selection is on.
