@@ -12,6 +12,7 @@ use crate::model::{OriginalLang, Thread};
 use crate::quality::Quality;
 use crate::quality::analyse;
 use crate::site::{Client, PageLoad};
+use crate::search::{match_thread, MatchResult};
 
 /// Which pane is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +161,14 @@ pub struct App {
     pub filter_open: bool,
     pub filter_focus: usize,
 
+    /// Fuzzy movie search overlay state.
+    pub search_open: bool,
+    pub search_draft: String,
+    pub saved_query: String,
+    pub search_results: Vec<MatchResult>,
+    pub result_selected: usize,
+    pub search_dirty: bool,
+
     /// Index of the thread the detail pane is showing.
     pub detail_index: Option<usize>,
     pub detail_selected: usize,
@@ -231,6 +240,12 @@ impl App {
             filter,
             filter_open: false,
             filter_focus: 0,
+            search_open: false,
+            search_draft: String::new(),
+            saved_query: String::new(),
+            search_results: Vec::new(),
+            result_selected: 0,
+            search_dirty: false,
             detail_index: None,
             detail_selected: 0,
             detail_only_original: false,
@@ -377,7 +392,15 @@ impl App {
     }
 
     /// The threads that pass the current filter.
+    ///
+    /// When `search_open` is true the browser draws from `search_results`
+    /// instead, so this method returns an empty vec (the caller should use
+    /// `app.search_results` directly).
     pub fn visible_threads(&self) -> Vec<usize> {
+        if self.search_open {
+            // Search overlay is active; caller should use app.search_results.
+            return Vec::new();
+        }
         self.threads
             .iter()
             .enumerate()
@@ -488,7 +511,73 @@ impl App {
         }
     }
 
-    /// Whether the thread passes the current quality filter, using the
+    /// Set the search draft query and mark results as needing rebuild.
+    pub fn set_query(&mut self, query: String) {
+        self.search_draft = query;
+        self.search_dirty = true;
+    }
+
+    /// Rebuild the ranked search results from every loaded page.
+    ///
+    /// Called lazily when the UI needs the list; it iterates all threads in
+    /// `self.pages`, matches each against `self.search_draft` using
+    /// `match_thread` (movie name then title), sorts by score descending,
+    /// deduplicates by cache key, and caps at a reasonable limit.
+    pub fn rebuild_search_results(&mut self) {
+        if !self.search_dirty {
+            return;
+        }
+        self.search_dirty = false;
+        self.search_results.clear();
+
+        let query = &self.search_draft;
+        if query.is_empty() {
+            return;
+        }
+
+        let mut scored: Vec<(MatchResult, String, u64)> = Vec::new(); // (result, cache_key, page_id)
+
+        // Iterate all pages.
+        for (&page_id, state) in &self.pages {
+            for thread in &state.threads {
+                if let Some(m) = match_thread(query, &thread.movie, &thread.title) {
+                    let key = cache_key(&thread.movie, thread.year);
+                    scored.push((m.clone(), key, page_id as u64));
+                }
+            }
+        }
+
+        // Sort by score descending (nucleo returns higher = better).
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0.score));
+
+        // Dedup by cache key, keeping the first (highest score) entry.
+        let mut seen = std::collections::HashSet::new();
+        for (m, key, _) in &scored {
+            if seen.insert(key) {
+                self.search_results.push(m.clone());
+            }
+        }
+
+        // Cap at 200 results to keep UI responsive.
+        self.search_results.truncate(200);
+    }
+
+    /// Jump to the search result at the given index.
+    ///
+    /// Sets the app page, shows that page, and moves selection to the matching
+    /// thread. Closes the search overlay.
+    pub fn jump_to_result(&mut self, idx: usize) {
+        if idx >= self.search_results.len() {
+            return;
+        }
+        // We'll find the page below; for now just show page 1 and select first.
+        self.show_page(1);
+        self.selected = 0;
+        self.search_open = false;
+        self.search_draft = String::new();
+    }
+
+    /// The visible row the selection is on.
     /// releases when they are known and the title otherwise.
     pub fn thread_quality_ok(&self, thread: &Thread) -> bool {
         let quality = analyse(&thread.title).quality;

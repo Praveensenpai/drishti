@@ -8,6 +8,7 @@ mod forums;
 mod lang;
 mod model;
 mod quality;
+mod search;   // fuzzy search engine
 mod site;
 mod ui;
 
@@ -855,6 +856,11 @@ async fn handle_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg
         return;
     }
 
+    if app.search_open {
+        handle_search_key(app, key);
+        return;
+    }
+
     match app.screen {
         Screen::Browser => handle_browser_key(app, key, tx).await,
         Screen::Detail => handle_detail_key(app, key, tx).await,
@@ -891,6 +897,11 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.screen = Screen::Help,
+        KeyCode::Char('/') => {
+            app.search_open = true;
+            app.saved_query = app.search_draft.clone();
+            app.set_query(String::new());
+        }
         KeyCode::Char('f') => {
             app.filter_open = true;
             app.filter_focus = 0;
@@ -1019,6 +1030,63 @@ fn handle_filter_key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
     app.config.allowed_qualities = app.filter.qualities.iter().copied().collect();
+}
+
+/// Keys for the search prompt (fuzzy movie finder).
+#[allow(unreachable_patterns)]
+fn handle_search_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.search_open = false;
+            app.search_draft = app.saved_query.clone();
+        }
+        KeyCode::Char('/') => {
+            // Keep search open, allow nesting (unlikely but harmless).
+        }
+        KeyCode::Enter => {
+            // Commit the search and jump to the first result.
+            app.rebuild_search_results();
+            if !app.search_results.is_empty() {
+                app.jump_to_result(0);
+            } else {
+                app.search_open = false;
+                app.search_draft = app.saved_query.clone();
+            }
+        }
+        KeyCode::Backspace => {
+            if !app.search_draft.is_empty() {
+                app.search_draft.pop();
+                app.set_query(app.search_draft.clone());
+            }
+        }
+        KeyCode::Char(c) => {
+            // c is already a validated printable key from crossterm KeyEvent.
+            // Accept any printable ASCII char (not whitespace control chars).
+            if c.is_ascii() && !c.is_ascii_whitespace() {
+                app.search_draft.push(c);
+                app.set_query(app.search_draft.clone());
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if !app.search_results.is_empty() {
+                if app.result_selected > 0 {
+                    app.result_selected -= 1;
+                } else {
+                    app.result_selected = app.search_results.len() - 1;
+                }
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if !app.search_results.is_empty()
+                && app.result_selected < app.search_results.len() - 1
+            {
+                app.result_selected += 1;
+            } else if !app.search_results.is_empty() {
+                app.result_selected = 0;
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Keys for the release detail pane.

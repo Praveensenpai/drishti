@@ -5,6 +5,7 @@ pub mod detail;
 pub mod help;
 
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders};
 
 use crate::app::{App, Screen};
@@ -67,6 +68,33 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Screen::Detail => detail::draw(frame, app),
         Screen::Help => help::draw(frame, app),
         Screen::Language => browser::draw_language(frame, app),
+    }
+
+    // Draw search overlay on top of whatever screen is active.
+    if app.search_open {
+        // Render a search status line using a full-width paragraph
+        // that appears at the top of the browser area.
+        let search_text = if app.search_draft.is_empty() {
+            " /  — start typing to search  —  esc to close  ↑↓ Nav  ↵ Jump  ? Help"
+        } else {
+            &format!(
+                "fuzzy search: '{}' ({} results)  —  esc to close  ↑↓ Nav  ↵ Jump  ? Help",
+                app.search_draft, app.search_results.len()
+            )
+        };
+        let search_line = Line::from(Span::styled(
+            search_text,
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+        // Render it as a widget block at the top.
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .style(Style::default().bg(Color::DarkGray));
+        // Use Paragraph to wrap the line.
+        let paragraph = ratatui::widgets::Paragraph::new(search_line.clone())
+            .block(block)
+            .style(Style::default());
+        frame.render_widget(paragraph, frame.area());
     }
 }
 
