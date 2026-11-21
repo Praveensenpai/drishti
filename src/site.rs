@@ -248,7 +248,7 @@ impl Client {
         }
     }
 
-    /// Fetch a thread and its releases, using the parsed-thread cache when fresh.
+    /// Fetch a thread and its releases, using the parsed-thread cache when available.
     pub async fn fetch_thread(&self, thread: &Thread) -> Result<Thread> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -256,11 +256,11 @@ impl Client {
             .unwrap_or(0);
 
         // Try the parsed-thread cache first: no HTTP, no parsing.
+        // Cached indefinitely so multi-audio releases shared across forums load instantly.
         if self.thread_cache_ttl.as_secs() > 0 {
             let path = self.thread_cache_path(&thread.url);
             if let Ok(text) = std::fs::read_to_string(&path)
                 && let Ok(entry) = serde_json::from_str::<ThreadCacheEntry>(&text)
-                && now.saturating_sub(entry.saved) < self.thread_cache_ttl.as_secs()
             {
                 let mut updated = thread.clone();
                 updated.releases = entry.releases;

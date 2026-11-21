@@ -204,7 +204,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn parse_release_langs (name : & str) -> LangSet
   ```
 
-### `src/main.rs` (Role: general, Lines: 1383)
+### `src/main.rs` (Role: general, Lines: 1454)
 - **Responsibility**: Core general logic in src/main.rs
 - **Imports**: use std :: path :: PathBuf , use anyhow :: { Context , Result } , use clap :: { Parser , Subcommand } , use crossterm :: event :: { Event , EventStream , KeyCode , KeyEvent , KeyEventKind , KeyModifiers } , use futures_util :: StreamExt , use tokio :: sync :: mpsc , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , effective_original , plan_batches } , use crate :: app :: { App , Msg , ScanProgress , Screen } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: { Quality , analyse , human_size } , use crate :: site :: PageLoad 
 
@@ -308,7 +308,7 @@ Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
   fn draw (frame : & mut ratatui :: Frame , app : & mut App)
   ```
 
-### `src/ui/help.rs` (Role: tui, Lines: 87)
+### `src/ui/help.rs` (Role: tui, Lines: 88)
 - **Responsibility**: Core tui logic in src/ui/help.rs
 - **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout } , use ratatui :: style :: Style , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Paragraph , Wrap } , use crate :: app :: App , use crate :: ui :: Theme 
 - **Public Functions & Signatures**:

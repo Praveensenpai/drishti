@@ -882,6 +882,7 @@ async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>
                 format!("scan complete · resolving {} movies", app.ai_queue.len())
             };
             dispatch_ai(app, tx);
+            maybe_prefetch_other_forums(app);
         }
         Msg::AiResolved(map) => {
             app.ai_in_flight = false;
@@ -966,6 +967,73 @@ fn dispatch_ai(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
     });
 }
 
+/// Crawl the other language forums in the background to prefetch and cache them.
+fn maybe_prefetch_other_forums(app: &App) {
+    let current_forum_id = app.forum().id;
+    let other_forums: Vec<&'static Forum> = app
+        .forums
+        .iter()
+        .copied()
+        .filter(|f| f.id != current_forum_id)
+        .collect();
+
+    let client = app.client.clone();
+    tokio::spawn(async move {
+        for forum in other_forums {
+            let watermark = site::read_watermark(forum.id);
+            let mut page = 1u32;
+            let mut limit: Option<u32> = None;
+            let mut newest_posted: Option<String> = None;
+
+            loop {
+                match client.fetch_page(forum, page).await {
+                    Ok(load) => {
+                        let total = load.total_pages.max(page);
+                        let last = limit.unwrap_or(total).min(total).max(page);
+                        limit = Some(last);
+
+                        for thread in &load.threads {
+                            if let Some(ref posted) = thread.posted {
+                                match &newest_posted {
+                                    Some(curr) if posted > curr => {
+                                        newest_posted = Some(posted.clone())
+                                    }
+                                    None => newest_posted = Some(posted.clone()),
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        let hit_watermark = if let Some(ref mark) = watermark {
+                            let has_newer = load.threads.iter().any(|t| {
+                                t.posted
+                                    .as_ref()
+                                    .map(|p| p.as_str() > mark.as_str())
+                                    .unwrap_or(false)
+                            });
+                            !load.threads.is_empty() && !has_newer
+                        } else {
+                            false
+                        };
+
+                        if hit_watermark || page >= last {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+                page += 1;
+                // Polite delay between background prefetch requests
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            if let Some(ref posted) = newest_posted {
+                site::write_watermark(forum.id, posted);
+            }
+        }
+    });
+}
+
 /// Copy text to the terminal clipboard using OSC 52.
 fn copy_to_clipboard(text: &str) {
     use base64::Engine;
@@ -1037,6 +1105,9 @@ async fn handle_language_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedS
 async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg>) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Esc | KeyCode::Char('L') => {
+            app.screen = Screen::Language;
+        }
         KeyCode::Char('?') => app.screen = Screen::Help,
         KeyCode::Char('/') => {
             app.search_open = true;

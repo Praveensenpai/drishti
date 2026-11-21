@@ -21,6 +21,7 @@ pub fn draw(frame: &mut ratatui::Frame, _app: &mut App) {
         ("← → / h l", "previous / next page"),
         ("[ ]", "switch forum"),
         ("g / G", "jump to the first / last row"),
+        ("esc / L", "return to the language selection menu"),
         ("↵", "open the selected thread's releases"),
         ("p", "open the selected post in your browser"),
         (
