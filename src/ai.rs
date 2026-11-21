@@ -548,10 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_entries_expire_after_a_day() {
+    fn cache_entries_expire_after_seven_days() {
         let mut cache = LangCache::default();
-        let stale = now_secs().saturating_sub(25 * 60 * 60);
-        let fresh = now_secs().saturating_sub(23 * 60 * 60);
+        let stale = now_secs().saturating_sub(8 * 24 * 60 * 60);
+        let fresh = now_secs().saturating_sub(6 * 24 * 60 * 60);
         cache.put(
             "old|2020".to_string(),
             CacheEntry {
@@ -570,8 +570,9 @@ mod tests {
                 resolved_at: fresh,
             },
         );
-        assert!(cache.get_with_ttl("old|2020", 86_400).is_none());
-        assert!(cache.get_with_ttl("new|2020", 86_400).is_some());
+        let ttl_7_days = 7 * 24 * 3600;
+        assert!(cache.get_with_ttl("old|2020", ttl_7_days).is_none());
+        assert!(cache.get_with_ttl("new|2020", ttl_7_days).is_some());
     }
 
     #[test]

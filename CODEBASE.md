@@ -1,283 +1,349 @@
 # CODEBASE.md: drushti Semantic Digest
 
-> **Notice**: This file is an AI-optimized semantic index. Do not write narrative prose. Keep token density high.
+> **Notice**: AI-optimized semantic index. Do not write narrative prose. Keep token density high.
 
 ## 1. System Topology & Data Flow
-
 ```text
-main.rs (CLI + event loop)
-  ├─ ansi.rs ──> coloured CLI output (TTY + NO_COLOR aware)
-  ├─ config.rs ──> Config (TOML, first-run wizard, CLI overrides)
-  ├─ discover.rs ──> site::forum_page_url (probe) ──> Bing HTML ──> parse.rs ──> config.save()
-  └─ run_tui ──> App (app.rs)
-                  ├─ site.rs::Client ──> forums.rs / model.rs / lang.rs / quality.rs
-                  ├─ ai.rs::Gemini + LangCache ──> config.toml / langcache.json
-                  ├─ search.rs (fuzzy_match, match_thread) ──> ui/browser.rs search overlay
-                  └─ ui/mod.rs::draw ──> browser.rs / detail.rs / help.rs
+Entrypoint ──> CLI/Parser ──> Domain Logic ──> Infra/IO
 ```
 
-Startup order: parse CLI -> load Config -> apply CLI overrides -> first-run wizard -> domain discovery (probe, optional Bing search, persist) -> command dispatch or TUI.
-
 ## 2. Global Constraints & Architecture Patterns
-
-- **Primary Language & Edition**: Rust 2024, tokio multi-thread, ratatui 0.30, crossterm 0.29.
-- **Architectural Paradigm**: Flat module tree under `src/`. No `domain/ / infra/ / api/` folders exist despite older docs claiming so. `src/discover.rs` plus `src/discover/` follows modern file-module style.
-- **Hard Constraints**: <400 lines/file (soft 300), <60 lines/fn (soft 40), max 4 params, nesting <=3, zero production `unwrap()`/`expect()`, zero compiler/clippy warnings. Several pre-existing files exceed the size limits (`main.rs` 1259, `site.rs` 898, etc.).
-- **Target Distribution**: Linux x86_64 standalone binary via GitHub Releases (`.github/workflows/release.yml`).
+- **Primary Language**: Rust 2021 edition
+- **Architectural Paradigm**: Role-based (domain/, infra/, api/cli/, tui/)
+- **Hard Constraints**: <400 lines/file, <60 lines/fn, zero production unwrap(), 0 warnings.
+- **Target Distribution**: Linux x86_64 standalone binary
 
 ## 3. Module & Interface Skeleton
 
-### `src/main.rs` (Role: cli, Lines: 1326)
-- **Responsibility**: CLI definitions, startup wiring, event loop, key dispatch, background task spawning.
-- **Imports**: `clap`, `crossterm`, `tokio::sync::mpsc`, all `crate::*` modules.
-- **Types & Enums**: `Cli`, `Command::{Probe,Resolve,List,ConfigPath,Config,Init,Update}`.
-- **Public Functions & Signatures**:
+### `src/ai.rs` (Role: general, Lines: 590)
+- **Responsibility**: Core general logic in src/ai.rs
+- **Imports**: use std :: collections :: HashMap , use std :: path :: { Path , PathBuf } , use anyhow :: { Context , Result , bail } , use serde :: { Deserialize , Serialize } , use crate :: lang :: Lang , use crate :: model :: { LangSource , OriginalLang , Thread } 
+- **Types & Enums**:
   ```rust
-  #[tokio::main] async fn main() -> Result<()>
-  async fn run_tui(config: Config, config_path: PathBuf, page_from: u32, page_to: Option<u32>) -> Result<()>
-  async fn handle_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSender<Msg>)
-  async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>)
-  fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>)
-  fn request_page(app: &mut App, page: u32, tx: &mpsc::UnboundedSender<Msg>)
-  fn dispatch_ai(app: &mut App, tx: &mpsc::UnboundedSender<Msg>)
-  async fn maybe_rediscover(config: &mut Config, config_path: &std::path::Path)
-  fn cache_dir() -> PathBuf
+  pub struct CacheEntry
+  pub struct LangCache
+  pub struct Gemini
   ```
-- **Consumers**: entrypoint.
-- **Side Effects**: writes config.toml via discovery, spawns tokio tasks, OSC 52 clipboard, browser launch, self-update via HTTP.
-
-### `src/discover.rs` (Role: infra, Lines: 164)
-- **Responsibility**: Startup board-domain probe and Bing fallback.
-- **Imports**: `reqwest`, `anyhow`, `crate::forums`, `crate::site`.
-- **Types & Enums**: `pub struct Discovery { http: reqwest::Client, cooldown: cooldown::Cooldown }`.
 - **Public Functions & Signatures**:
   ```rust
-  pub fn Discovery::new(cache_dir: &Path) -> Result<Self>
-  pub async fn Discovery::resolve(&self, current: &str, query: &str, search_endpoint: &str) -> Result<Option<String>>
-  fn probe_url(base: &str) -> String
-  async fn Discovery::probe(&self, url: &str) -> bool
-  async fn Discovery::find_origins(&self, query: &str, endpoint: &str) -> Vec<parse::Candidate>
-  async fn Discovery::search(&self, query: &str, endpoint: &str) -> Result<String>
-  ```
-- **Consumers**: `main.rs`.
-- **Side Effects**: HTTP GET to board listing and Bing, writes failure timestamp to cache dir.
-
-### `src/discover/parse.rs` (Role: domain, Lines: 218)
-- **Responsibility**: Pure Bing-result parsing and strict 1tamilmv hostname validation.
-- **Imports**: `scraper::{Html, Selector}`, `url::Url`.
-- **Types & Enums**: `pub struct Candidate { pub origin: String, pub host: String }`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn extract_candidates(html: &str) -> Vec<String>
-  pub fn board_origin(raw: &str) -> Option<Candidate>
-  pub fn board_origins(candidates: &[String]) -> Vec<Candidate>
-  pub fn extract_text_domains(html: &str) -> Vec<Candidate>
-  fn is_board_host(host: &str) -> bool
-  ```
-- **Consumers**: `discover.rs`.
-- **Side Effects**: none.
-
-### `src/discover/cooldown.rs` (Role: infra, Lines: 69)
-- **Responsibility**: One-hour failure cooldown stamp for discovery.
-- **Imports**: `std::path`, `std::time`.
-- **Types & Enums**: `pub struct Cooldown { path: PathBuf }`, `const COOLDOWN_SECS: u64 = 3600`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn Cooldown::new(cache_dir: &Path) -> Self
-  pub fn Cooldown::is_active(&self) -> bool
-  pub fn Cooldown::mark(&self)
-  ```
-- **Consumers**: `discover.rs`.
-- **Side Effects**: reads/writes `<cache_dir>/domain_discovery`.
-
-### `src/ansi.rs` (Role: cli, Lines: 128)
-- **Responsibility**: ANSI colour helpers and a stderr spinner for non-interactive commands.
-- **Imports**: `std::io::{IsTerminal, Write}`, `std::sync::OnceLock`, `std::thread`.
-- **Types & Enums**: `pub struct Spinner { stop: Arc<AtomicBool>, thread: Option<JoinHandle<()>> }`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn enabled() -> bool
-  pub fn accent(text: &str) -> String
-  pub fn success(text: &str) -> String
-  pub fn warn(text: &str) -> String
-  pub fn error(text: &str) -> String
-  pub fn muted(text: &str) -> String
-  pub fn good(text: &str) -> String
-  pub fn check() -> &'static str
-  pub fn cross() -> &'static str
-  pub fn Spinner::start(label: impl Into<String>) -> Self
-  pub fn Spinner::finish(self, message: &str)
-  ```
-- **Consumers**: `main.rs`, `discover.rs`.
-- **Side Effects**: writes ANSI escape sequences and spinner frames to stdout/stderr only when a TTY and `NO_COLOR` is unset.
-
-### `src/config.rs` (Role: domain, Lines: 315)
-- **Responsibility**: TOML config, defaults, first-run wizard.
-- **Imports**: `serde`, `toml`, `anyhow`, `crate::quality`.
-- **Types & Enums**: `pub struct Config` with fields: `base_url`, `gemini_api_key`, `gemini_models`, `allowed_qualities`, `original_only`, `resolve_on_load`, `cache_ttl_minutes`, `auto_update`, `ai_batch_size`, `ai_batch_chars`, `ai_batch_pause_ms`, `ai_cache_hours`, `magnet_post_url`, `auto_discover_domain` (default true), `domain_search_query` (default "1tamilmv"), `domain_search_endpoint` (default "https://www.bing.com/search").
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn Config::interactive() -> bool
-  pub fn Config::configure(config: &mut Config) -> Result<()>
-  pub fn Config::load(path: &Path) -> Result<Config>
-  pub fn Config::save(&self, path: &Path) -> Result<()>
-  pub fn Config::api_key(&self) -> String
-  pub fn default_config_path() -> PathBuf
-  ```
-- **Consumers**: `main.rs`, `app.rs`.
-- **Side Effects**: reads/writes config.toml, reads `GEMINI_API_KEY`.
-
-### `src/site.rs` (Role: api, Lines: 898)
-- **Responsibility**: HTTP client, three on-disk caches, HTML scraping of forums and releases.
-- **Imports**: `reqwest`, `scraper`, `regex`, `futures_util`.
-- **Types & Enums**: `Client`, `ForumPage`, `PageLoad`, `AnchorKind`, `Anchor`, `HttpCacheEntry`, `PageCacheEntry`, `ThreadCacheEntry`, `PAGE_CACHE_VERSION`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn forum_page_url(base_url: &str, forum: &Forum, page: u32) -> String
-  pub fn Client::new(base_url: &str, cache_dir: PathBuf, cache_ttl: Duration) -> Result<Self>
-  pub async fn Client::get(&self, url: &str) -> Result<String>
-  pub async fn Client::fetch_forum(&self, forum: &'static Forum, page: u32) -> Result<ForumPage>
-  pub async fn Client::fetch_page(&self, forum: &'static Forum, page: u32) -> Result<PageLoad>
-  pub async fn Client::fetch_thread(&self, thread: &Thread) -> Result<Thread>
-  pub fn parse_forum(body: &str, forum: &'static Forum, page: u32) -> Result<ForumPage>
-  pub fn parse_releases(body: &str) -> Result<Vec<Release>>
-  pub fn clean_release_name(raw: &str) -> String
-  pub fn default_cache_dir() -> PathBuf
-  pub(crate) const USER_AGENT: &str
-  ```
-- **Consumers**: `main.rs`, `app.rs`, `discover.rs`.
-- **Side Effects**: HTTP GET, JSON cache files under `<cache>/drushti/http|pages|threads`.
-
-### `src/app.rs` (Role: domain, Lines: 650)
-- **Responsibility**: Application state, filters, search result assembly, AI queue plumbing.
-- **Imports**: `crate::ai`, `config`, `forums`, `lang`, `model`, `quality`, `site`, `search`.
-- **Types & Enums**: `Screen::{Browser,Detail,Help,Language}`, `Filter`, `PageState`, `ScanProgress`, `Msg::{PageReady,PageFailed,ScanFinished,AiResolved,AiFailed,MagnetPosted}`, `App` (all state fields incl. search overlay fields).
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn App::new(config: Config, cache_path: PathBuf) -> anyhow::Result<App>
-  pub fn App::show_page(&mut self, page: u32)
-  pub fn App::store_page(&mut self, load: PageLoad)
-  pub fn App::reset_scan(&mut self)
-  pub fn App::queue_ai_threads(&mut self, threads: &[Thread])
-  pub fn App::apply_ai(&mut self, map: &HashMap<String, CacheEntry>)
-  pub fn App::visible_threads(&self) -> Vec<usize>
-  pub fn App::thread_passes(&self, thread: &Thread) -> bool
-  pub fn App::effective_original(&self, thread: &Thread) -> Option<OriginalLang>
-  pub fn App::visible_releases(&self) -> Vec<usize>
-  pub fn App::set_query(&mut self, query: String)
-  pub fn App::rebuild_search_results(&mut self)
-  pub fn App::jump_to_result(&mut self, idx: usize)
-  ```
-- **Consumers**: `main.rs`, `ui/*`.
-- **Side Effects**: none (pure state).
-
-### `src/ai.rs` (Role: api, Lines: 589)
-- **Responsibility**: Gemini client, original-language resolution, on-disk language cache, batching.
-- **Imports**: `reqwest`, `serde`, `anyhow`, `crate::lang`, `crate::model`.
-- **Types & Enums**: `CacheEntry`, `LangCache`, `Gemini`, `MODEL_CHAIN`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn Gemini::new(api_key: &str, models: Vec<String>) -> Result<Self>
-  pub async fn Gemini::resolve_batch(&self, keys: &[String]) -> Result<HashMap<String, CacheEntry>>
-  pub async fn Gemini::probe(&self) -> Result<Vec<String>>
-  pub fn LangCache::load(path: &Path) -> LangCache
-  pub fn LangCache::save(&self, path: &Path) -> Result<()>
-  pub fn LangCache::get_with_ttl(&self, key: &str, ttl_secs: u64) -> Option<&CacheEntry>
-  pub fn heuristic_original(thread: &Thread) -> OriginalLang
-  pub fn plan_batches(keys: &[String], max_items: usize, max_chars: usize) -> Vec<Vec<String>>
-  pub fn cache_key(title: &str, year: Option<u16>) -> String
-  pub fn effective_original(thread: &Thread, cache: &LangCache, key: &str, ttl_secs: u64) -> OriginalLang
-  pub fn default_cache_path() -> PathBuf
-  ```
-- **Consumers**: `main.rs`, `app.rs`.
-- **Side Effects**: POST to Gemini API, reads/writes `langcache.json`.
-
-### `src/model.rs` (Role: domain, Lines: 225)
-- **Responsibility**: Core data types and title splitting.
-- **Types & Enums**: `Thread`, `Release`, `OriginalLang`, `LangSource::{Ai,MultiAudio,TitleTag,Forum,Verified,Unknown}`, `StoredThread`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn split_title(title: &str) -> (String, Option<u16>, String)
-  pub fn StoredThread::from_thread(thread: &Thread) -> Self
-  pub fn StoredThread::into_thread(self) -> Option<Thread>
-  pub fn Release::has_original(&self, original: Lang) -> bool
-  ```
-- **Consumers**: `site.rs`, `app.rs`, `ai.rs`, `ui/*`.
-
-### `src/search.rs` (Role: domain, Lines: 229)
-- **Responsibility**: Fuzzy subsequence movie search.
-- **Types & Enums**: `MatchResult { score, text, indices, page_id, thread_index }`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn fuzzy_match(query: &str, text: &str) -> Option<MatchResult>
-  pub fn match_thread(query: &str, movie: &str, title: &str) -> Option<MatchResult>
-  ```
-- **Consumers**: `app.rs`. Note: `MatchResult.indices` are computed but not rendered by the UI.
-
-### `src/quality.rs` (Role: domain, Lines: 408)
-- **Responsibility**: Lexical classification of quality, source, resolution, size.
-- **Types & Enums**: `Quality`, `Source`, `Resolution`, `ReleaseInfo`.
-- **Public Functions & Signatures**:
-  ```rust
-  pub fn analyse(name: &str) -> ReleaseInfo
-  pub fn contains_token(haystack: &str, needle: &str) -> bool
-  pub fn human_size(bytes: Option<u64>) -> String
+  fn now_secs () -> u64
+  fn load (path : & Path) -> LangCache
+  fn save (& self , path : & Path) -> Result < () >
+  fn get_with_ttl (& self , key : & str , ttl_secs : u64) -> Option < & CacheEntry >
+  fn put (& mut self , key : String , mut entry : CacheEntry)
+  fn len (& self) -> usize
+  fn new (api_key : & str , models : Vec < String >) -> Result < Self >
+  async fn resolve_batch (& self , keys : & [String]) -> Result < HashMap < String , CacheEntry > >
+  async fn probe (& self) -> Result < Vec < String > >
+  fn cache_key (title : & str , year : Option < u16 >) -> String
+  fn heuristic_original (thread : & Thread) -> OriginalLang
+  fn plan_batches (keys : & [String] , max_items : usize , max_chars : usize) -> Vec < Vec < String > >
+  fn default_cache_path () -> PathBuf
+  fn effective_original (thread : & Thread , cache : & LangCache , key : & str , ttl_secs : u64 ,) -> OriginalLang
   ```
 
-### `src/lang.rs` (Role: domain, Lines: 555)
-- **Responsibility**: Language enum, scene aliases, release-name language parsing.
-- **Types & Enums**: `Lang` (27 variants), `LangSet { audio, text, dubbed, subtitled }`.
+### `src/ansi.rs` (Role: general, Lines: 128)
+- **Responsibility**: Core general logic in src/ansi.rs
+- **Imports**: use std :: io :: { self , IsTerminal , Write } , use std :: sync :: Arc , use std :: sync :: atomic :: { AtomicBool , Ordering } , use std :: time :: Duration 
+- **Types & Enums**:
+  ```rust
+  pub struct Spinner
+  ```
 - **Public Functions & Signatures**:
   ```rust
-  pub fn parse_release_langs(name: &str) -> LangSet
-  pub fn scan_text(text: &str) -> Vec<Lang>
-  pub fn lang_from_token(token: &str) -> Option<Lang>
-  pub fn lang_from_list_token(token: &str) -> Option<Lang>
-  pub fn Lang::code(self) -> &'static str
-  pub fn Lang::label(self) -> &'static str
-  pub fn Lang::from_code(code: &str) -> Lang
+  fn enabled () -> bool
+  fn accent (text : & str) -> String
+  fn success (text : & str) -> String
+  fn warn (text : & str) -> String
+  fn error (text : & str) -> String
+  fn muted (text : & str) -> String
+  fn good (text : & str) -> String
+  fn check () -> & 'static str
+  fn cross () -> & 'static str
+  fn start (label : impl Into < String >) -> Self
+  fn finish (mut self , message : & str)
   ```
 
-### `src/forums.rs` (Role: domain, Lines: 424)
-- **Responsibility**: Static forum catalogue (id, slug, title, language, kind).
-- **Types & Enums**: `Forum`, `ForumKind`.
+### `src/app.rs` (Role: general, Lines: 654)
+- **Responsibility**: Core general logic in src/app.rs
+- **Imports**: use std :: collections :: { BTreeSet , HashMap } , use std :: path :: PathBuf , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , heuristic_original , plan_batches } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: lang :: Lang , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: Quality , use crate :: quality :: analyse , use crate :: search :: { MatchResult , match_thread } , use crate :: site :: { Client , PageLoad } 
+- **Types & Enums**:
+  ```rust
+  pub enum Screen
+  pub struct Filter
+  pub struct PageState
+  pub struct ScanProgress
+  pub enum Msg
+  pub struct App
+  ```
 - **Public Functions & Signatures**:
   ```rust
-  pub fn by_id(id: u32) -> Option<&'static Forum>
-  pub fn all_web_hd() -> Vec<&'static Forum>
-  pub fn f_lang_root(lang: Lang) -> u32
+  fn allows_quality (& self , quality : Quality) -> bool
+  fn allows_language (& self , lang : Option < Lang >) -> bool
+  fn ratio (& self) -> f64
+  fn new (config : Config , cache_path : PathBuf) -> anyhow :: Result < App >
+  fn forum (& self) -> & 'static Forum
+  fn ai_ttl_secs (& self) -> u64
+  fn show_page (& mut self , page : u32)
+  fn store_page (& mut self , load : PageLoad)
+  fn reset_scan (& mut self)
+  fn queue_ai_threads (& mut self , threads : & [Thread])
+  fn apply_ai (& mut self , map : & HashMap < String , CacheEntry >)
+  fn ai_batches_left (& self) -> usize
+  fn ai_batches_total (& self) -> u32
+  fn spinner (& self) -> & 'static str
+  fn progress_text (& self) -> Option < String >
+  fn visible_threads (& self) -> Vec < usize >
+  fn thread_passes (& self , thread : & Thread) -> bool
+  fn effective_original (& self , thread : & Thread) -> Option < OriginalLang >
+  fn detail_thread (& self) -> Option < & Thread >
+  fn visible_releases (& self) -> Vec < usize >
+  fn select_visible (& mut self , delta : isize)
+  fn select_row (& mut self , row : usize)
+  fn set_query (& mut self , query : String)
+  fn rebuild_search_results (& mut self)
+  fn jump_to_result (& mut self , idx : usize)
+  fn thread_quality_ok (& self , thread : & Thread) -> bool
+  fn selected_row (& self) -> usize
+  ```
+
+### `src/config.rs` (Role: general, Lines: 315)
+- **Responsibility**: Core general logic in src/config.rs
+- **Imports**: use std :: io :: { self , BufRead , IsTerminal , Write } , use std :: path :: { Path , PathBuf } , use anyhow :: { Context , Result } , use serde :: { Deserialize , Serialize } , use crate :: quality :: Quality 
+- **Types & Enums**:
+  ```rust
+  pub struct Config
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn interactive () -> bool
+  fn configure (config : & mut Config) -> Result < () >
+  fn load (path : & Path) -> Result < Config >
+  fn save (& self , path : & Path) -> Result < () >
+  fn api_key (& self) -> String
+  fn default_config_path () -> PathBuf
+  ```
+
+### `src/discover/cooldown.rs` (Role: general, Lines: 69)
+- **Responsibility**: Core general logic in src/discover/cooldown.rs
+- **Imports**: use std :: path :: { Path , PathBuf } , use std :: time :: { SystemTime , UNIX_EPOCH } 
+- **Types & Enums**:
+  ```rust
+  pub struct Cooldown
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn new (cache_dir : & Path) -> Self
+  fn is_active (& self) -> bool
+  fn mark (& self)
+  ```
+
+### `src/discover/parse.rs` (Role: general, Lines: 218)
+- **Responsibility**: Core general logic in src/discover/parse.rs
+- **Imports**: use std :: sync :: LazyLock , use base64 :: Engine , use regex :: Regex , use scraper :: { Html , Selector } , use url :: Url 
+- **Types & Enums**:
+  ```rust
+  pub struct Candidate
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn extract_candidates (html : & str) -> Vec < String >
+  fn board_origin (raw : & str) -> Option < Candidate >
+  fn board_origins (candidates : & [String]) -> Vec < Candidate >
+  fn extract_text_domains (html : & str) -> Vec < Candidate >
+  ```
+
+### `src/discover.rs` (Role: general, Lines: 164)
+- **Responsibility**: Core general logic in src/discover.rs
+- **Imports**: use std :: path :: Path , use std :: time :: Duration , use anyhow :: { Context , Result } , use crate :: ansi , use crate :: forums , use crate :: site 
+- **Types & Enums**:
+  ```rust
+  pub struct Discovery
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn new (cache_dir : & Path) -> Result < Self >
+  async fn resolve (& self , current : & str , query : & str , search_endpoint : & str ,) -> Result < Option < String > >
+  ```
+
+### `src/forums.rs` (Role: general, Lines: 424)
+- **Responsibility**: Core general logic in src/forums.rs
+- **Imports**: use crate :: lang :: Lang 
+- **Types & Enums**:
+  ```rust
+  pub struct Forum
+  pub enum ForumKind
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn label (self) -> & 'static str
+  fn by_id (id : u32) -> Option < & 'static Forum >
+  fn web_hd_forum (lang : Lang) -> Option < & 'static Forum >
+  fn all_web_hd () -> Vec < & 'static Forum >
+  ```
+
+### `src/lang.rs` (Role: general, Lines: 555)
+- **Responsibility**: Core general logic in src/lang.rs
+- **Imports**: use std :: fmt , use serde :: { Deserialize , Serialize } 
+- **Types & Enums**:
+  ```rust
+  pub enum Lang
+  pub struct LangSet
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn code (self) -> & 'static str
+  fn label (self) -> & 'static str
+  fn from_code (code : & str) -> Lang
+  fn lang_from_token (token : & str) -> Option < Lang >
+  fn lang_from_list_token (token : & str) -> Option < Lang >
+  fn parse_list_group (group : & str) -> Vec < Lang >
+  fn scan_text (text : & str) -> Vec < Lang >
+  fn all (& self) -> Vec < Lang >
+  fn compact (& self) -> String
+  fn parse_release_langs (name : & str) -> LangSet
+  ```
+
+### `src/main.rs` (Role: general, Lines: 1383)
+- **Responsibility**: Core general logic in src/main.rs
+- **Imports**: use std :: path :: PathBuf , use anyhow :: { Context , Result } , use clap :: { Parser , Subcommand } , use crossterm :: event :: { Event , EventStream , KeyCode , KeyEvent , KeyEventKind , KeyModifiers } , use futures_util :: StreamExt , use tokio :: sync :: mpsc , use crate :: ai :: { CacheEntry , Gemini , LangCache , cache_key , effective_original , plan_batches } , use crate :: app :: { App , Msg , ScanProgress , Screen } , use crate :: config :: Config , use crate :: forums :: { Forum , all_web_hd } , use crate :: model :: { OriginalLang , Thread } , use crate :: quality :: { Quality , analyse , human_size } , use crate :: site :: PageLoad 
+
+### `src/model.rs` (Role: general, Lines: 225)
+- **Responsibility**: Core general logic in src/model.rs
+- **Imports**: use serde :: { Deserialize , Serialize } , use crate :: forums :: Forum , use crate :: lang :: { Lang , LangSet } , use crate :: quality :: ReleaseInfo 
+- **Types & Enums**:
+  ```rust
+  pub struct Thread
+  pub enum LangSource
+  pub struct OriginalLang
+  pub struct Release
+  pub struct StoredThread
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn label (self) -> & 'static str
+  fn has_original (& self , original : Lang) -> bool
+  fn from_thread (thread : & Thread) -> Self
+  fn into_thread (self) -> Option < Thread >
+  fn split_title (title : & str) -> (String , Option < u16 > , String)
+  ```
+
+### `src/quality.rs` (Role: general, Lines: 408)
+- **Responsibility**: Core general logic in src/quality.rs
+- **Imports**: use std :: fmt , use serde :: { Deserialize , Serialize } 
+- **Types & Enums**:
+  ```rust
+  pub enum Quality
+  pub enum Source
+  pub enum Resolution
+  pub struct ReleaseInfo
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn label (self) -> & 'static str
+  fn is_web_dl (self) -> bool
+  fn label (self) -> & 'static str
+  fn label (self) -> & 'static str
+  fn analyse (name : & str) -> ReleaseInfo
+  fn contains_token (haystack : & str , needle : & str) -> bool
+  fn human_size (bytes : Option < u64 >) -> String
+  ```
+
+### `src/search.rs` (Role: general, Lines: 229)
+- **Responsibility**: Core general logic in src/search.rs
+- **Types & Enums**:
+  ```rust
+  pub struct MatchResult
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn label (& self) -> & str
+  fn fuzzy_match (query : & str , text : & str) -> Option < MatchResult >
+  fn match_thread (query : & str , movie : & str , title : & str) -> Option < MatchResult >
+  ```
+
+### `src/site.rs` (Role: general, Lines: 958)
+- **Responsibility**: Core general logic in src/site.rs
+- **Imports**: use std :: time :: Duration , use anyhow :: { Context , Result , bail } , use futures_util :: StreamExt , use regex :: Regex , use scraper :: { ElementRef , Html , Selector } , use std :: path :: PathBuf , use std :: sync :: LazyLock , use crate :: forums :: Forum , use crate :: lang :: { LangSet , parse_release_langs } , use crate :: model :: { Release , StoredThread , Thread , split_title } , use crate :: quality :: analyse 
+- **Types & Enums**:
+  ```rust
+  pub struct Client
+  pub struct ForumPage
+  pub struct PageLoad
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn forum_page_url (base_url : & str , forum : & Forum , page : u32) -> String
+  fn new (base_url : & str , cache_dir : PathBuf , cache_ttl : Duration) -> Result < Self >
+  async fn get (& self , url : & str) -> Result < String >
+  fn forum_url (& self , forum : & Forum , page : u32) -> String
+  async fn fetch_forum (& self , forum : & 'static Forum , page : u32) -> Result < ForumPage >
+  async fn fetch_page (& self , forum : & 'static Forum , page : u32) -> Result < PageLoad >
+  fn clear_page_cache (& self , forum_id : u32)
+  async fn fetch_thread (& self , thread : & Thread) -> Result < Thread >
+  fn parse_forum (body : & str , forum : & 'static Forum , page : u32) -> Result < ForumPage >
+  fn parse_releases (body : & str) -> Result < Vec < Release > >
+  fn clean_release_name (raw : & str) -> String
+  fn watermark_path (forum_id : u32) -> PathBuf
+  fn read_watermark (forum_id : u32) -> Option < String >
+  fn write_watermark (forum_id : u32 , posted : & str)
+  fn clear_watermark (forum_id : u32)
+  fn default_cache_dir () -> PathBuf
+  ```
+
+### `src/ui/browser.rs` (Role: tui, Lines: 599)
+- **Responsibility**: Core tui logic in src/ui/browser.rs
+- **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span , Text } , use ratatui :: widgets :: { Cell , Gauge , Paragraph , Row , Table , TableState , Wrap } , use crate :: app :: App , use crate :: lang :: Lang , use crate :: model :: LangSource , use crate :: quality :: { Quality , analyse , human_size } , use crate :: ui :: Theme 
+- **Public Functions & Signatures**:
+  ```rust
+  fn draw (frame : & mut ratatui :: Frame , app : & mut App)
+  fn draw_language (frame : & mut ratatui :: Frame , app : & mut App)
+  ```
+
+### `src/ui/detail.rs` (Role: tui, Lines: 232)
+- **Responsibility**: Core tui logic in src/ui/detail.rs
+- **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout , Rect } , use ratatui :: style :: { Modifier , Style } , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Cell , Paragraph , Row , Table , TableState } , use crate :: app :: App , use crate :: model :: LangSource , use crate :: quality :: { Quality , human_size } , use crate :: ui :: { Theme , truncate } 
+- **Public Functions & Signatures**:
+  ```rust
+  fn draw (frame : & mut ratatui :: Frame , app : & mut App)
+  ```
+
+### `src/ui/help.rs` (Role: tui, Lines: 87)
+- **Responsibility**: Core tui logic in src/ui/help.rs
+- **Imports**: use ratatui :: layout :: { Constraint , Direction , Layout } , use ratatui :: style :: Style , use ratatui :: text :: { Line , Span } , use ratatui :: widgets :: { Paragraph , Wrap } , use crate :: app :: App , use crate :: ui :: Theme 
+- **Public Functions & Signatures**:
+  ```rust
+  fn draw (frame : & mut ratatui :: Frame , _app : & mut App)
   ```
 
 ### `src/ui/mod.rs` (Role: tui, Lines: 88)
-- **Responsibility**: Theme constants, screen router, truncate helper.
-- **Public Functions & Signatures**: `pub fn draw(frame: &mut ratatui::Frame, app: &mut App)`, `pub fn truncate(text: &str, width: usize) -> String`, `Theme::{block,popup,good,bad,muted,focus}`.
-
-### `src/ui/browser.rs` (Role: tui, Lines: 599)
-- **Responsibility**: Header, filter bar, thread table, filter popup, language picker, search bar and results.
-
-### `src/ui/detail.rs` (Role: tui, Lines: 232)
-- **Responsibility**: Release header, release table, key hints.
-
-### `src/ui/help.rs` (Role: tui, Lines: 86)
-- **Responsibility**: Key binding reference screen.
+- **Responsibility**: Core tui logic in src/ui/mod.rs
+- **Imports**: use ratatui :: style :: { Color , Modifier , Style } , use ratatui :: widgets :: { Block , BorderType , Borders } , use crate :: app :: { App , Screen } 
+- **Types & Enums**:
+  ```rust
+  pub struct Theme
+  ```
+- **Public Functions & Signatures**:
+  ```rust
+  fn block (title : & str) -> Block < 'static >
+  fn popup (title : & str) -> Block < 'static >
+  fn good () -> Style
+  fn bad () -> Style
+  fn muted () -> Style
+  fn focus () -> Style
+  fn draw (frame : & mut ratatui :: Frame , app : & mut App)
+  fn truncate (text : & str , width : usize) -> String
+  ```
 
 ## 4. Execution Lifecycle Trace
-
-1. **Startup**: `main()` parses CLI, loads `Config`, applies overrides, runs first-run wizard if needed.
-2. **Discovery**: if `auto_discover_domain`, probe configured board using `site::forum_page_url`; on failure check cooldown, search Bing, parse link targets and result text for board domains, probe each candidate, persist the first working `base_url` to config.toml.
-3. **Dispatch**: subcommands run directly (`list`, `resolve`, `probe`, `update`, config helpers); no subcommand enters `run_tui`.
-4. **TUI**: language picker -> `start_scan` spawns page fetches -> `Msg::PageReady` stores pages -> AI batches resolve original languages -> tables render.
-5. **Exit**: save language cache, `ratatui::restore()`.
+1. **Startup**: Entrypoint parses CLI flags & dispatches command.
+2. **Execution**: Core domain logic processes inputs and evaluates rules.
+3. **Persistence / I/O**: Domain logic calls infra for disk/terminal I/O.
+4. **Exit**: Graceful termination with standard exit codes.
 
 ## 5. Verification Commands
-
 ```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
 cargo build --release --target x86_64-unknown-linux-gnu
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
-
-## 6. Recent Iteration Changes
-
-- **2026-11-21**: Added `src/ansi.rs` for TTY-aware coloured CLI output and a stderr spinner, applied to `list`, `resolve`, `probe`, `update` and discovery messages; `list --json` and `NO_COLOR` stay plain. Added `src/discover.rs` + `src/discover/{parse,cooldown}.rs` for startup board-domain discovery via Bing with a 1-hour failure cooldown. Candidates come from Bing redirect links and from domains mentioned in result text; each is probed until one works. Added `auto_discover_domain`, `domain_search_query` and `domain_search_endpoint` config keys. Extracted `site::forum_page_url` and made `USER_AGENT` crate-visible. Removed unused `chrono` dependency and unused imports in `ui/mod.rs`. Rewrote this index from the stale v0.4.0-only stub.

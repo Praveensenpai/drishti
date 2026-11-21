@@ -646,8 +646,9 @@ async fn run_tui(
 /// Start a background scan of the selected forum, from the first page to the
 /// last page (or the configured limit). Every page is fully enriched before it
 /// is delivered, so the table never changes its release information after the
-/// fact.
-fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
+/// fact. When `force_full` is false, it uses the saved watermark to stop scanning
+/// pages once hitting posts already seen.
+fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>, force_full: bool) {
     let forum = app.forum();
     let from = app.page_from.max(1);
     let to = app.page_to.map(|last| last.max(from));
@@ -663,19 +664,62 @@ fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
         pages_total: to.map(|last| last.saturating_sub(from) + 1).unwrap_or(0),
         ..ScanProgress::default()
     };
-    app.status = format!("scanning {}...", forum.title);
+    app.status = if force_full {
+        format!("full rescanning {}...", forum.title)
+    } else {
+        format!("scanning {}...", forum.title)
+    };
+
+    if force_full {
+        site::clear_watermark(forum.id);
+        app.client.clear_page_cache(forum.id);
+    }
+
+    let watermark = if force_full {
+        None
+    } else {
+        site::read_watermark(forum.id)
+    };
 
     let client = app.client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
         let mut page = from;
         let mut limit = to;
+        let mut newest_posted: Option<String> = None;
+        let mut hit_watermark = false;
+
         loop {
             match client.fetch_page(forum, page).await {
                 Ok(load) => {
                     let total = load.total_pages.max(page);
                     let last = limit.unwrap_or(total).min(total).max(page);
                     limit = Some(last);
+
+                    // Track newest post timestamp across scanned pages.
+                    for thread in &load.threads {
+                        if let Some(ref posted) = thread.posted {
+                            match &newest_posted {
+                                Some(curr) if posted > curr => newest_posted = Some(posted.clone()),
+                                None => newest_posted = Some(posted.clone()),
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // Check if all threads on this page are <= watermark.
+                    if let Some(ref mark) = watermark {
+                        let has_newer = load.threads.iter().any(|t| {
+                            t.posted
+                                .as_ref()
+                                .map(|p| p.as_str() > mark.as_str())
+                                .unwrap_or(false)
+                        });
+                        if !load.threads.is_empty() && !has_newer {
+                            hit_watermark = true;
+                        }
+                    }
+
                     let _ = tx.send(Msg::PageReady {
                         forum_id: forum.id,
                         page,
@@ -684,7 +728,8 @@ fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
                         from_cache: load.from_cache,
                         scan_id,
                     });
-                    if page >= last {
+
+                    if hit_watermark || page >= last {
                         break;
                     }
                 }
@@ -706,6 +751,7 @@ fn start_scan(app: &mut App, tx: &mpsc::UnboundedSender<Msg>) {
         let _ = tx.send(Msg::ScanFinished {
             forum_id: forum.id,
             scan_id,
+            newest_posted,
         });
     });
 }
@@ -810,9 +856,16 @@ async fn handle_message(app: &mut App, msg: Msg, tx: &mpsc::UnboundedSender<Msg>
                 }
             }
         }
-        Msg::ScanFinished { forum_id, scan_id } => {
+        Msg::ScanFinished {
+            forum_id,
+            scan_id,
+            newest_posted,
+        } => {
             if scan_id != app.scan_id || forum_id != app.forum().id {
                 return;
+            }
+            if let Some(ref posted) = newest_posted {
+                site::write_watermark(forum_id, posted);
             }
             app.scan.active = false;
             app.loading = !app.pages.contains_key(&app.page) && app.pages_in_flight > 0;
@@ -972,7 +1025,7 @@ async fn handle_language_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedS
             app.screen = Screen::Browser;
             let page = app.page.max(1);
             app.page_from = page;
-            start_scan(app, tx);
+            start_scan(app, tx, false);
         }
         KeyCode::Esc | KeyCode::Char('q') => app.screen = Screen::Browser,
         KeyCode::Char('?') => app.screen = Screen::Help,
@@ -1006,7 +1059,11 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
         }
         KeyCode::Char('s') => {
             app.status = "rescanning...".to_string();
-            start_scan(app, tx);
+            start_scan(app, tx, false);
+        }
+        KeyCode::Char('S') => {
+            app.status = "force full rescanning...".to_string();
+            start_scan(app, tx, true);
         }
         KeyCode::Char('r') => {
             let page = app.page;
@@ -1018,7 +1075,7 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
                 app.page = 1;
                 app.page_from = 1;
                 app.page_to = None;
-                start_scan(app, tx);
+                start_scan(app, tx, false);
             }
         }
         KeyCode::Char(']') => {
@@ -1027,7 +1084,7 @@ async fn handle_browser_key(app: &mut App, key: KeyEvent, tx: &mpsc::UnboundedSe
                 app.page = 1;
                 app.page_from = 1;
                 app.page_to = None;
-                start_scan(app, tx);
+                start_scan(app, tx, false);
             }
         }
         KeyCode::Char('g') => app.select_row(0),

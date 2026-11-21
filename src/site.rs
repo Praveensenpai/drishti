@@ -152,8 +152,8 @@ impl Client {
 
     /// Fetch a forum page and enrich every thread with its releases.
     ///
-    /// The fully enriched page is cached as one unit, so reopening a page is
-    /// instant even when it carries twenty-five threads.
+    /// The fully enriched page is cached as one unit on disk indefinitely,
+    /// so reopening a page is instant without waiting for re-scrape.
     pub async fn fetch_page(&self, forum: &'static Forum, page: u32) -> Result<PageLoad> {
         let now = now_secs();
         if self.cache_ttl.as_secs() > 0 {
@@ -161,7 +161,6 @@ impl Client {
             if let Ok(text) = std::fs::read_to_string(&path)
                 && let Ok(entry) = serde_json::from_str::<PageCacheEntry>(&text)
                 && entry.version == PAGE_CACHE_VERSION
-                && now.saturating_sub(entry.saved) < self.cache_ttl.as_secs()
             {
                 let threads: Vec<Thread> = entry
                     .threads
@@ -232,6 +231,21 @@ impl Client {
     fn page_cache_path(&self, forum: &Forum, page: u32) -> PathBuf {
         self.page_cache_dir
             .join(format!("{}-{page}.json", forum.id))
+    }
+
+    /// Delete all cached pages for a forum so a fresh full scrape occurs.
+    pub fn clear_page_cache(&self, forum_id: u32) {
+        if let Ok(entries) = std::fs::read_dir(&self.page_cache_dir) {
+            let prefix = format!("{forum_id}-");
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && name.starts_with(&prefix)
+                    && name.ends_with(".json")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
     }
 
     /// Fetch a thread and its releases, using the parsed-thread cache when fresh.
@@ -853,6 +867,16 @@ mod tests {
         assert_eq!(releases[1].langs.text, vec![crate::lang::Lang::Kannada]);
         assert_eq!(releases[1].info.quality, crate::quality::Quality::WebDl);
     }
+
+    #[test]
+    fn watermark_round_trips() {
+        let test_forum_id = 999999;
+        let stamp = "2026-11-21T18:00:00Z";
+        write_watermark(test_forum_id, stamp);
+        assert_eq!(read_watermark(test_forum_id), Some(stamp.to_string()));
+        clear_watermark(test_forum_id);
+        assert_eq!(read_watermark(test_forum_id), None);
+    }
 }
 
 /// A cached HTTP response.
@@ -879,6 +903,42 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Path to the forum watermark recording the newest post timestamp seen in a completed scan.
+pub fn watermark_path(forum_id: u32) -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("drushti")
+        .join("watermarks")
+        .join(format!("{forum_id}.txt"))
+}
+
+/// Read the newest post timestamp watermark for a forum.
+pub fn read_watermark(forum_id: u32) -> Option<String> {
+    let path = watermark_path(forum_id);
+    let s = std::fs::read_to_string(path).ok()?;
+    let trimmed = s.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Persist the newest post timestamp watermark for a forum.
+pub fn write_watermark(forum_id: u32, posted: &str) {
+    let path = watermark_path(forum_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, posted.trim());
+}
+
+/// Remove the watermark for a forum.
+pub fn clear_watermark(forum_id: u32) {
+    let path = watermark_path(forum_id);
+    let _ = std::fs::remove_file(path);
 }
 
 /// Default directory for the on-disk HTTP cache.

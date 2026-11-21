@@ -113,7 +113,11 @@ pub enum Msg {
         scan_id: u64,
     },
     /// Every page of the scan has been delivered.
-    ScanFinished { forum_id: u32, scan_id: u64 },
+    ScanFinished {
+        forum_id: u32,
+        scan_id: u64,
+        newest_posted: Option<String>,
+    },
     /// The model resolved a batch of movies.
     AiResolved(HashMap<String, CacheEntry>),
     /// The model call failed.

@@ -93,7 +93,7 @@ impl Default for Config {
             ai_batch_size: 24,
             ai_batch_chars: 6000,
             ai_batch_pause_ms: 1500,
-            ai_cache_hours: 24,
+            ai_cache_hours: 168,
             magnet_post_url: String::new(),
             auto_discover_domain: default_auto_discover_domain(),
             domain_search_query: default_domain_search_query(),
