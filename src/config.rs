@@ -46,6 +46,27 @@ pub struct Config {
     /// Leave empty to disable (not everyone runs ryoiki). When set, the
     /// selected release's magnet is POSTed as JSON `{"magnet": "..."}`.
     pub magnet_post_url: String,
+    /// Probe the board at startup and rediscover its domain when it is down.
+    #[serde(default = "default_auto_discover_domain")]
+    pub auto_discover_domain: bool,
+    /// Query sent to the search engine when the board domain is unreachable.
+    #[serde(default = "default_domain_search_query")]
+    pub domain_search_query: String,
+    /// Search endpoint used for domain discovery.
+    #[serde(default = "default_domain_search_endpoint")]
+    pub domain_search_endpoint: String,
+}
+
+fn default_domain_search_endpoint() -> String {
+    "https://www.bing.com/search".to_string()
+}
+
+fn default_auto_discover_domain() -> bool {
+    true
+}
+
+fn default_domain_search_query() -> String {
+    "1tamilmv".to_string()
 }
 
 impl Default for Config {
@@ -74,6 +95,9 @@ impl Default for Config {
             ai_batch_pause_ms: 1500,
             ai_cache_hours: 24,
             magnet_post_url: String::new(),
+            auto_discover_domain: default_auto_discover_domain(),
+            domain_search_query: default_domain_search_query(),
+            domain_search_endpoint: default_domain_search_endpoint(),
         }
     }
 }
@@ -196,8 +220,22 @@ impl Config {
         } else {
             magnet.trim().to_string()
         };
+        Self::configure_discovery(config)?;
 
         println!("\nsetup complete\n");
+        Ok(())
+    }
+
+    /// Ask about the domain discovery settings.
+    fn configure_discovery(config: &mut Config) -> Result<()> {
+        config.auto_discover_domain = prompt_bool(
+            "Discover the board domain at startup",
+            config.auto_discover_domain,
+        )?;
+        let query = prompt_line("Domain search query", &config.domain_search_query)?;
+        if !query.trim().is_empty() {
+            config.domain_search_query = query.trim().to_string();
+        }
         Ok(())
     }
 
@@ -266,5 +304,12 @@ mod tests {
         let parsed: Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.base_url, config.base_url);
         assert_eq!(parsed.allowed_qualities, config.allowed_qualities);
+    }
+
+    #[test]
+    fn discovery_settings_default_when_absent() {
+        let config: Config = toml::from_str("base_url = \"https://example.invalid\"").unwrap();
+        assert!(config.auto_discover_domain);
+        assert_eq!(config.domain_search_query, "1tamilmv");
     }
 }

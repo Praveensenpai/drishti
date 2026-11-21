@@ -591,6 +591,9 @@ fn draw_search_view(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = TableState::default();
-    state.select(Some(app.result_selected.min(app.search_results.len().saturating_sub(1))));
+    state.select(Some(
+        app.result_selected
+            .min(app.search_results.len().saturating_sub(1)),
+    ));
     frame.render_stateful_widget(table, area, &mut state);
 }

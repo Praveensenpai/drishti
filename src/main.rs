@@ -2,13 +2,15 @@
 //! by the language the film was originally made in.
 
 mod ai;
+mod ansi;
 mod app;
 mod config;
+mod discover;
 mod forums;
 mod lang;
 mod model;
 mod quality;
-mod search;   // fuzzy search engine
+mod search; // fuzzy search engine
 mod site;
 mod ui;
 
@@ -136,6 +138,8 @@ async fn main() -> Result<()> {
         println!("configuration saved to {}", config_path.display());
     }
 
+    maybe_rediscover(&mut config, &config_path).await;
+
     match cli.command {
         Some(Command::Probe) => probe(&config).await,
         Some(Command::Resolve { forum, page }) => resolve(&config, &forum, page, to_page).await,
@@ -191,15 +195,16 @@ async fn probe(config: &Config) -> Result<()> {
         anyhow::bail!("no API key set. Use --gemini-key, GEMINI_API_KEY, or the config file.");
     }
     let gemini = Gemini::new(&key, config.gemini_models.clone())?;
+    let spinner = ansi::Spinner::start("checking Gemini key");
     let models = gemini.probe().await?;
-    println!("key is valid, {} models available", models.len());
+    spinner.finish(&format!("key valid, {} models available", models.len()));
     for name in &config.gemini_models {
         let mark = if models.iter().any(|m| m == name) {
-            "available"
+            ansi::success("available")
         } else {
-            "not listed"
+            ansi::muted("not listed")
         };
-        println!("  {name:<28} {mark}");
+        println!("  {} {}", ansi::accent(name), mark);
     }
     Ok(())
 }
@@ -218,7 +223,9 @@ async fn list(
         site::default_cache_dir(),
         std::time::Duration::from_secs(config.cache_ttl_minutes as u64 * 60),
     )?;
+    let spinner = ansi::Spinner::start(format!("loading {} page {page}", forum.title));
     let result = client.fetch_page(forum, page).await?;
+    spinner.finish(&format!("page {page} has {} threads", result.threads.len()));
     let cache = LangCache::load(&ai::default_cache_path());
     let ttl = config.ai_cache_hours.saturating_mul(3600);
     let original_of = |thread: &Thread| {
@@ -267,33 +274,50 @@ async fn list(
         return Ok(());
     }
 
-    println!(
-        "{} — page {}/{}  ({} threads){}",
+    let heading = format!(
+        "{}  page {}/{}  ({} threads)",
         forum.title,
         result.page,
         result.total_pages,
-        result.threads.len(),
-        if result.from_cache { "  [cached]" } else { "" }
+        result.threads.len()
     );
+    let cached = if result.from_cache {
+        ansi::muted("  cached")
+    } else {
+        String::new()
+    };
+    println!("{}{}", ansi::accent(&heading), cached);
     for thread in &result.threads {
         let info = analyse(&thread.title);
         let original = original_of(thread);
         let quality = format!("{:<8}", info.quality.label());
+        let quality = if info.quality == Quality::WebDl {
+            ansi::good(&quality)
+        } else {
+            ansi::warn(&quality)
+        };
+        let lang = ansi::accent(&format!("{:<12}", original.lang.label()));
         println!(
-            "  {:<44} {:<8} {:<12} {}",
+            "  {:<44} {} {} {}",
             truncate(&thread.title, 44),
             quality,
-            original.lang.label(),
-            thread.url
+            lang,
+            ansi::muted(&thread.url)
         );
         if with_releases {
             for release in &thread.releases {
+                let rel_quality = format!("{:<8}", release.info.quality.label());
+                let rel_quality = if release.info.quality == Quality::WebDl {
+                    ansi::good(&rel_quality)
+                } else {
+                    ansi::warn(&rel_quality)
+                };
                 println!(
-                    "      {:<8} {:<7} {:<22} {:<8} {}",
-                    release.info.quality.label(),
-                    release.info.resolution.label(),
-                    release.langs.compact(),
-                    human_size(release.info.size_bytes),
+                    "      {} {} {} {} {}",
+                    rel_quality,
+                    ansi::muted(&format!("{:<7}", release.info.resolution.label())),
+                    ansi::muted(&format!("{:<22}", release.langs.compact())),
+                    ansi::muted(&format!("{:<8}", human_size(release.info.size_bytes))),
                     release.name
                 );
             }
@@ -347,7 +371,9 @@ async fn resolve(
     let mut page = from_page.max(1);
     let mut limit = to_page;
     loop {
+        let spinner = ansi::Spinner::start(format!("{} page {page}", forum.title));
         let load = client.fetch_page(forum, page).await?;
+        spinner.finish(&format!("page {page} loaded"));
         let total = load.total_pages.max(page);
         let last = limit.unwrap_or(total).min(total).max(page);
         limit = Some(last);
@@ -362,8 +388,9 @@ async fn resolve(
         }
 
         println!(
-            "{} — page {page}/{total} — {} threads, {} needing model resolution",
-            forum.title,
+            "{}  {}  {} threads, {} needing model resolution",
+            ansi::accent(forum.title),
+            ansi::muted(&format!("page {page}/{total}")),
             threads.len(),
             keys.len()
         );
@@ -374,16 +401,18 @@ async fn resolve(
             if index > 0 && pause > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
             }
+            let spinner =
+                ansi::Spinner::start(format!("resolving batch {}/{}", index + 1, batch_total));
             let map = gemini.resolve_batch(batch).await?;
+            spinner.finish(&format!("batch {}/{} answered", index + 1, batch_total));
             for (movie_key, entry) in &map {
                 cache.put(movie_key.clone(), entry.clone());
             }
             apply_map(&mut threads, &map);
             cache.save(&ai::default_cache_path())?;
             println!(
-                "  resolved batch {}/{} ({} movies)",
-                index + 1,
-                batch_total,
+                "  {} {} movies cached",
+                ansi::success("resolved"),
                 batch.len()
             );
         }
@@ -402,12 +431,22 @@ async fn resolve(
         }
 
         for thread in &threads {
-            let original = thread.original.expect("resolved above");
+            let Some(original) = thread.original else {
+                continue;
+            };
+            let lang = format!("{:<10}", original.lang.label());
+            let lang = if original.confidence >= 0.8 {
+                ansi::success(&lang)
+            } else if original.confidence >= 0.5 {
+                ansi::warn(&lang)
+            } else {
+                ansi::error(&lang)
+            };
             println!(
-                "  {:<44} {:<10} {:<6} confidence {:.2}",
+                "  {:<44} {} {} confidence {:.2}",
                 truncate(&thread.title, 44),
-                original.lang.label(),
-                original.source.label(),
+                lang,
+                ansi::muted(original.source.label()),
                 original.confidence
             );
         }
@@ -439,7 +478,8 @@ fn apply_map(threads: &mut [Thread], map: &std::collections::HashMap<String, Cac
 async fn update() -> Result<()> {
     const URL: &str =
         "https://github.com/Praveensenpai/drushti/releases/latest/download/drushti-linux-x86_64";
-    println!("==> downloading latest release");
+    println!("{}", ansi::accent("downloading latest release"));
+    let spinner = ansi::Spinner::start("fetching release from GitHub");
     let client = reqwest::Client::builder()
         .user_agent("drushti-updater")
         .build()
@@ -450,9 +490,11 @@ async fn update() -> Result<()> {
         .await
         .context("downloading release")?;
     if !resp.status().is_success() {
+        drop(spinner);
         anyhow::bail!("download failed: HTTP {}", resp.status());
     }
     let bytes = resp.bytes().await.context("reading release bytes")?;
+    spinner.finish(&format!("downloaded {} bytes", bytes.len()));
     let exe = std::env::current_exe().context("locating current executable")?;
     let tmp = exe.with_extension("new");
     std::fs::write(&tmp, &bytes).context("writing new binary")?;
@@ -464,7 +506,11 @@ async fn update() -> Result<()> {
         std::fs::set_permissions(&tmp, perms)?;
     }
     std::fs::rename(&tmp, &exe).context("replacing executable")?;
-    println!("==> drushti updated to the latest release");
+    println!(
+        "{} {}",
+        ansi::success(ansi::check()),
+        ansi::accent("drushti updated to the latest release")
+    );
     Ok(())
 }
 
@@ -473,6 +519,48 @@ fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("drushti")
+}
+
+/// Verify the configured board domain and persist a replacement if needed.
+///
+/// Discovery is best effort: a failure never prevents the app from starting.
+async fn maybe_rediscover(config: &mut Config, config_path: &std::path::Path) {
+    if !config.auto_discover_domain {
+        return;
+    }
+    let discovery = match discover::Discovery::new(&cache_dir()) {
+        Ok(discovery) => discovery,
+        Err(error) => {
+            eprintln!("{} {}", ansi::warn("warning:"), error);
+            return;
+        }
+    };
+    match discovery
+        .resolve(
+            &config.base_url,
+            &config.domain_search_query,
+            &config.domain_search_endpoint,
+        )
+        .await
+    {
+        Ok(Some(base)) => {
+            config.base_url = base.clone();
+            // Save only the discovered domain. CLI overrides such as a one-off
+            // --gemini-key must not be silently written to config.toml.
+            let mut stored = Config::load(config_path).unwrap_or_default();
+            stored.base_url = base.clone();
+            if let Err(error) = stored.save(config_path) {
+                eprintln!("{} {}", ansi::warn("warning:"), error);
+            }
+            eprintln!(
+                "{} {}",
+                ansi::success(ansi::check()),
+                ansi::accent(&format!("board domain updated to {base}"))
+            );
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("{} {}", ansi::warn("warning:"), error),
+    }
 }
 
 /// Spawn `drushti update` in the background once a day (best effort).
@@ -1090,8 +1178,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if !app.search_results.is_empty()
-                && app.result_selected < app.search_results.len() - 1
+            if !app.search_results.is_empty() && app.result_selected < app.search_results.len() - 1
             {
                 app.result_selected += 1;
             } else if !app.search_results.is_empty() {

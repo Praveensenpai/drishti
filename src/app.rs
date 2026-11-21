@@ -11,8 +11,8 @@ use crate::lang::Lang;
 use crate::model::{OriginalLang, Thread};
 use crate::quality::Quality;
 use crate::quality::analyse;
+use crate::search::{MatchResult, match_thread};
 use crate::site::{Client, PageLoad};
-use crate::search::{match_thread, MatchResult};
 
 /// Which pane is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

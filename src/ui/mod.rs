@@ -5,7 +5,6 @@ pub mod detail;
 pub mod help;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders};
 
 use crate::app::{App, Screen};

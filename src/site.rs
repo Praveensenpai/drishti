@@ -21,8 +21,24 @@ use crate::quality::analyse;
 /// Default board address.
 pub const DEFAULT_BASE_URL: &str = "https://www.1tamilmv.ceo";
 
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                          (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                                     (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/// Build a forum listing URL. Shared by the client and the startup prober.
+pub fn forum_page_url(base_url: &str, forum: &Forum, page: u32) -> String {
+    let base = base_url.trim_end_matches('/');
+    if page <= 1 {
+        format!(
+            "{base}/index.php?/forums/forum/{}-{}/",
+            forum.id, forum.slug
+        )
+    } else {
+        format!(
+            "{base}/index.php?/forums/forum/{}-{}/page/{}/",
+            forum.id, forum.slug, page
+        )
+    }
+}
 
 /// HTTP client for the board.
 #[derive(Clone)]
@@ -124,17 +140,7 @@ impl Client {
 
     /// The URL of a forum page.
     pub fn forum_url(&self, forum: &Forum, page: u32) -> String {
-        if page <= 1 {
-            format!(
-                "{}/index.php?/forums/forum/{}-{}/",
-                self.base_url, forum.id, forum.slug
-            )
-        } else {
-            format!(
-                "{}/index.php?/forums/forum/{}-{}/page/{}/",
-                self.base_url, forum.id, forum.slug, page
-            )
-        }
+        forum_page_url(&self.base_url, forum, page)
     }
 
     /// Fetch one page of a forum.
